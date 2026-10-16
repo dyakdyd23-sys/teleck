@@ -1,0 +1,12 @@
+{
+  "_notice": "PLACEHOLDER ONLY. Do not enable this without verified provider documentation. Keys/paths below describe adapter configuration, not real API field names.",
+  "base_url": "",
+  "auth_header": "",
+  "auth_prefix": "",
+  "create": {"method": "POST", "path": "", "phones_field": "", "task_id_path": ""},
+  "status": {"method": "GET", "path": "", "state_path": "", "processed_count_path": ""},
+  "result": {"method": "GET", "path": "", "rows_path": "", "phone_field": "", "joined_field": "", "uid_field": "", "username_field": "", "last_active_field": "", "last_active_format": ""},
+  "state_map": {"": "processing"},
+  "max_batch_size": 0,
+  "requests_per_minute": 0
+}

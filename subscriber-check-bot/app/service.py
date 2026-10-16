@@ -1,0 +1,75 @@
+import json, uuid, os
+from pathlib import Path
+from . import config, db
+from .phones import parse_file
+
+def preview(user_id, filename, content):
+    parsed=parse_file(filename,content)
+    pid=uuid.uuid4().hex
+    suffix=filename.lower().rsplit('.',1)[-1]
+    file=config.STORAGE/f'{pid}.{suffix}'
+    file.write_bytes(content)
+    with db.transaction() as c:
+        db.ensure_user(c,user_id)
+        c.execute('INSERT INTO previews VALUES(?,?,?,?)',(pid,user_id,str(file),db.now()))
+        settings={k:db.setting(c,k) for k in ('unit_tenths','min_count','max_count')}
+        balance=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(user_id,)).fetchone()[0]
+    return {**{k:v for k,v in parsed.items() if k!='phones'},'preview_id':pid,'cost_tenths':parsed['valid']*settings['unit_tenths'],'balance_tenths':balance,**settings}
+
+def submit(user_id, preview_id):
+    with db.transaction() as c:
+        prev=c.execute('SELECT * FROM previews WHERE id=? AND user_id=?',(preview_id,user_id)).fetchone()
+        if not prev:raise ValueError('존재하지 않거나 이미 신청된 파일입니다.')
+        path=Path(prev['source_file'])
+        if not path.exists():raise ValueError('업로드 파일을 찾을 수 없습니다.')
+        parsed=parse_file(path.name,path.read_bytes())
+        n=parsed['valid'];mini=db.setting(c,'min_count');maxi=db.setting(c,'max_count')
+        if not (mini<=n<=maxi):raise ValueError(f'신청 범위는 {mini:,}~{maxi:,}건입니다.')
+        rate=db.setting(c,'unit_tenths');amount=n*rate
+        if not config.API_URL or not config.API_KEY or not provider_ready():
+            raise ValueError('실제 검수 API 연동이 아직 설정되지 않았습니다. 신청과 결제를 차단했습니다.')
+        updated=c.execute('UPDATE users SET balance_tenths=balance_tenths-? WHERE user_id=? AND balance_tenths>=?',(amount,user_id,amount)).rowcount
+        if updated!=1:raise ValueError('잔액이 부족합니다.')
+        jid=uuid.uuid4().hex
+        c.execute('INSERT INTO jobs(id,user_id,status,original_count,invalid_count,duplicate_count,valid_count,unit_tenths,charged_tenths,source_file,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
+                  (jid,user_id,'pending',parsed['total'],parsed['invalid'],parsed['duplicates'],n,rate,amount,str(path),db.now(),db.now()))
+        c.executemany('INSERT INTO phones(job_id,phone) VALUES(?,?)',((jid,p) for p in parsed['phones']))
+        c.execute('INSERT INTO ledger(user_id,job_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                  (user_id,jid,'charge',-amount,'검수 신청','system',f'charge:{jid}',db.now()))
+        c.execute('DELETE FROM previews WHERE id=?',(preview_id,))
+        db.audit(c,str(user_id),'submit',jid,f'count={n}')
+        return jid
+
+def provider_ready():
+    from .provider import Contract
+    try:Contract.load();return True
+    except Exception:return False
+
+def credit(user_id,amount_tenths,actor,reference):
+    if amount_tenths<=0:raise ValueError('충전 금액은 0보다 커야 합니다.')
+    if not reference.strip():raise ValueError('중복 방지 참조값이 필요합니다.')
+    with db.transaction() as c:
+        db.ensure_user(c,user_id)
+        c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',
+                  (user_id,'credit',amount_tenths,'관리자 잔액 조정',actor,'credit:'+reference,db.now()))
+        c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(amount_tenths,user_id))
+        db.audit(c,actor,'credit',detail=f'user={user_id},amount_tenths={amount_tenths},reference={reference}')
+
+def refund_for_unresolved(c,jid,actor='system'):
+    j=c.execute('SELECT * FROM jobs WHERE id=?',(jid,)).fetchone()
+    unresolved=c.execute("SELECT COUNT(*) FROM phones WHERE job_id=? AND state!='done'",(jid,)).fetchone()[0]
+    amount=min(unresolved*j['unit_tenths'],j['charged_tenths']-j['refunded_tenths'])
+    if amount:
+        key=f'refund:unresolved:{jid}'
+        inserted=c.execute('INSERT OR IGNORE INTO ledger(user_id,job_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?)',
+                    (j['user_id'],jid,'refund',amount,'누락·미처리 건 환불',actor,key,db.now())).rowcount
+        if inserted:
+            c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(amount,j['user_id']))
+            c.execute('UPDATE jobs SET refunded_tenths=refunded_tenths+? WHERE id=?',(amount,jid))
+            db.audit(c,actor,'refund',jid,f'count={unresolved},amount_tenths={amount}')
+    return amount
+
+def list_jobs(user_id=None):
+    with db.connect() as c:
+        if user_id is None:return [dict(x) for x in c.execute('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100')]
+        return [dict(x) for x in c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(user_id,))]
