@@ -1,14 +1,14 @@
 import io,logging
 from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,InputFile
 from telegram.ext import Application,CommandHandler,MessageHandler,CallbackQueryHandler,filters,ContextTypes
-from . import config,db,service
+from . import config,db,service,deposits
 from .export import export
 log=logging.getLogger(__name__)
 
 def keyboard():
     return InlineKeyboardMarkup([
       [InlineKeyboardButton('🔍 검수 시작',callback_data='guide'),InlineKeyboardButton('📁 내 작업',callback_data='jobs')],
-      [InlineKeyboardButton('💳 내 잔액',callback_data='balance'),InlineKeyboardButton('📘 이용 안내',callback_data='help')],
+      [InlineKeyboardButton('💳 잔액 · 충전',callback_data='balance'),InlineKeyboardButton('📘 이용 안내',callback_data='help')],
       [InlineKeyboardButton('💬 고객센터',url='https://t.me/teleck777')]])
 
 async def start(update:Update,context:ContextTypes.DEFAULT_TYPE):
@@ -68,8 +68,23 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if data=='guide':return await q.message.reply_text('<b>📂 검수 파일 업로드</b>\n<i>아래 형식의 파일을 이 채팅에 보내주세요.</i>\n\n━━━━━━━━━━━━━━━━━━━━\n<b>지원 파일</b>  XLSX · XLS · CSV · TXT\n<b>전화번호 예시</b>\n<code>010-1234-5678</code>\n<code>8210-1234-5678</code>\n<code>+821012345678</code>\n━━━━━━━━━━━━━━━━━━━━\n\n✅ 중복·형식 오류 자동 정리\n✅ 8210 번호를 010으로 변환\n✅ 결과는 Excel(.xlsx)로 전달\n\n<i>파일을 업로드하면 예상 비용을 먼저 보여드립니다.</i>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 문의하기',url='https://t.me/teleck777')]]))
         if data=='cancel':return await q.message.reply_text('신청을 취소했습니다. 다른 파일을 올려 주세요.')
         if data=='balance':
-            with db.connect() as c:row=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()
-            return await q.message.reply_text('💳 <b>내 보유 잔액</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>'+db.money(row[0] if row else 0)+'</b>\n\n충전 관련 문의는 고객센터를 이용해 주세요.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 고객센터',url='https://t.me/teleck777')]]))
+            with db.connect() as c:
+                row=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()
+                address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=? AND active=1',(uid,)).fetchone()
+                rates={asset:db.setting(c,key) for asset,key in [('TRX','trx_krw_rate'),('USDT','usdt_krw_rate')]}
+            addr=address['address'] if address else None
+            ready=bool(config.TRONGRID_KEY and addr)
+            message=('💳 <b>내 지갑 · 자동충전</b>\n━━━━━━━━━━━━━━━━━━━━\n'
+                     f'💰 보유 잔액  <b>{db.money(row[0] if row else 0)}</b>\n\n'
+                     '🟣 <b>TRX · TRON 네트워크</b>\n'
+                     '🟢 <b>USDT · TRC-20 네트워크</b>\n'
+                     f'시스템 환산 단가\nTRX 1개: {rates["TRX"]:,}원 / USDT 1개: {rates["USDT"]:,}원\n\n'
+                     + ('📥 <b>공통 입금주소</b>\n<code>'+addr+'</code>\n\n' if ready and all(rates.values()) else '⚠️ <b>충전 준비 중</b> — 관리자에게 문의해 주세요.\n\n')
+                     + '✅ 블록체인 확정 입금만 자동 반영\n'
+                     + '🔢 수량은 소수점 셋째 자리까지 표시\n'
+                     + '⛔ TRON 외 다른 네트워크로 전송하지 마세요.\n'
+                     + '입금 반영 후 /start 로 잔액을 확인하세요.')
+            return await q.message.reply_text(message,parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 충전 문의',url='https://t.me/teleck777')]]))
         if data=='jobs':
             jobs=service.list_jobs(uid)
             if not jobs:return await q.message.reply_text('검수 내역이 없습니다.')

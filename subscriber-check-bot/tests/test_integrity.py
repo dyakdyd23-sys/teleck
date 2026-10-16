@@ -52,3 +52,27 @@ def test_refund_once(store):
     with db.connect() as c:
         assert c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]==506
         assert c.execute("SELECT COUNT(*) FROM ledger WHERE kind='refund'").fetchone()[0]==1
+
+def test_trx_incoming_confirmed_once(store):
+    uid=accounts.register('trx_buyer','longenough-password-123')
+    address='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+    deposits.assign(uid,address)
+    with db.connect() as c: assigned=c.execute('SELECT scan_after_ms FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()[0]
+    alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+    n=0
+    for x in address:n=n*58+alphabet.index(x)
+    to_hex=n.to_bytes(25,'big')[:-4].hex()
+    transfer={'txID':'a'*64,'ret':[{'contractRet':'SUCCESS'}],'raw_data':{'timestamp':assigned+1,'contract':[{'type':'TransferContract','parameter':{'value':{'amount':1234567,'to_address':to_hex}}}]}}
+    assert deposits.record_trx(transfer,address,uid,assigned,1000)
+    assert not deposits.record_trx(transfer,address,uid,assigned,1000)
+    with db.connect() as c:
+        assert c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]==12345
+        assert c.execute('SELECT COUNT(*) FROM trx_deposits').fetchone()[0]==1
+    assert deposits.coin_display(1234567)=='1.235'
+
+def test_trx_reject_failed_and_contract_calls(store):
+    uid=accounts.register('trx_fail','longenough-password-123')
+    address='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+    deposits.assign(uid,address)
+    raw={'txID':'b'*64,'ret':[{'contractRet':'REVERT'}],'raw_data':{'timestamp':9999999999999,'contract':[{'type':'TriggerSmartContract','parameter':{'value':{'amount':1000000}}}]}}
+    assert not deposits.record_trx(raw,address,uid,0,1000)

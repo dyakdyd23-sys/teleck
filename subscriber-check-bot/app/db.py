@@ -65,11 +65,14 @@ def init():
         CREATE TABLE IF NOT EXISTS deposit_addresses(address TEXT PRIMARY KEY,user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id),assigned_at TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,scan_after_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS deposits(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(user_id), txid TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE, address TEXT NOT NULL,usdt_micro INTEGER NOT NULL,krw_tenths INTEGER NOT NULL,rate_krw INTEGER NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id,confirmed_at);
+        CREATE TABLE IF NOT EXISTS trx_deposits(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(user_id),txid TEXT NOT NULL UNIQUE,address TEXT NOT NULL,amount_sun INTEGER NOT NULL,krw_tenths INTEGER NOT NULL,rate_krw INTEGER NOT NULL,confirmed_at TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS idx_trx_deposits_user ON trx_deposits(user_id,confirmed_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_deposits_txid ON deposits(txid);
         CREATE TABLE IF NOT EXISTS result_archives(job_id TEXT PRIMARY KEY REFERENCES jobs(id), sha256 TEXT NOT NULL, delivered_to_user_at TEXT, delivered_to_admin_at TEXT, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS admin_deliveries(job_id TEXT NOT NULL REFERENCES jobs(id), admin_id INTEGER NOT NULL, delivered_at TEXT NOT NULL, document_sent INTEGER NOT NULL, PRIMARY KEY(job_id,admin_id));
         """)
         c.execute("INSERT OR IGNORE INTO settings VALUES('usdt_krw_rate','0')")
+        c.execute("INSERT OR IGNORE INTO settings VALUES('trx_krw_rate','0')")
         c.execute("INSERT OR IGNORE INTO settings VALUES('unit_tenths','6')")
         c.execute("INSERT OR IGNORE INTO settings VALUES('min_count','5000')")
         c.execute("INSERT OR IGNORE INTO settings VALUES('max_count','1000000')")

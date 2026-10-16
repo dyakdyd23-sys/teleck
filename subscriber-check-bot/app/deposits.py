@@ -25,6 +25,44 @@ def assign(user_id,address):
         c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))
         db.audit(c,'admin','assign_deposit_address',detail=f'user={user_id},address={address}')
 
+def coin_display(micro):
+    return f'{Decimal(micro)/Decimal(1_000_000):,.3f}'
+
+def record_trx(transfer,address,user_id,assigned_after,rate):
+    """Credit only confirmed, successful native TransferContract, not smart contract calls."""
+    if rate <= 0 or not transfer.get('ret') or transfer['ret'][0].get('contractRet') != 'SUCCESS':return False
+    raw=transfer.get('raw_data') or {}
+    contracts=raw.get('contract') or []
+    if len(contracts)!=1 or contracts[0].get('type')!='TransferContract':return False
+    value=(contracts[0].get('parameter') or {}).get('value') or {}
+    try:
+        amount=int(value.get('amount',0));ts=int(raw.get('timestamp',0))
+        to_hex=value.get('to_address','')
+        # TRON native TransferContract address is hex, not base58.
+        to_address=tron_hex_to_base58(to_hex)
+    except (TypeError,ValueError,OverflowError):return False
+    if to_address!=address or ts<assigned_after or amount<=0:return False
+    txid=transfer.get('txID','')
+    if len(txid)!=64 or any(ch not in '0123456789abcdefABCDEF' for ch in txid):return False
+    tenths=int((Decimal(amount)*Decimal(rate)*10/Decimal(1_000_000)).to_integral_value(rounding=ROUND_DOWN))
+    if tenths<=0:return False
+    with db.transaction() as c:
+        if c.execute('SELECT 1 FROM trx_deposits WHERE txid=?',(txid,)).fetchone():return False
+        c.execute('INSERT INTO trx_deposits(user_id,txid,address,amount_sun,krw_tenths,rate_krw,confirmed_at) VALUES(?,?,?,?,?,?,?)',(user_id,txid,address,amount,tenths,rate,db.now()))
+        c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',(user_id,'trx_deposit',tenths,f'TRX confirmed: {amount} sun at {rate} KRW','chain','trx_native:'+txid,db.now()))
+        c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(tenths,user_id))
+        db.audit(c,'chain','trx_deposit',detail=f'user={user_id},txid={txid},sun={amount},rate={rate}')
+    return True
+
+def tron_hex_to_base58(value):
+    raw=bytes.fromhex(value)
+    if len(raw)!=21 or raw[0]!=0x41:raise ValueError('Invalid TRON hex address')
+    checked=raw+hashlib.sha256(hashlib.sha256(raw).digest()).digest()[:4]
+    alphabet='123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+    number=int.from_bytes(checked,'big');out=''
+    while number:number,r=divmod(number,58);out=alphabet[r]+out
+    return out
+
 def record(transfer,address,user_id,assigned_after,rate):
     if transfer.get('to')!=address or transfer.get('type')!='Transfer':return False
     token=transfer.get('token_info') or {}
@@ -49,32 +87,33 @@ def record(transfer,address,user_id,assigned_after,rate):
 async def scan_once():
     if not config.TRONGRID_KEY:return 0
     with db.connect() as c:
-        rate=db.setting(c,'usdt_krw_rate')
+        rates={'USDT':db.setting(c,'usdt_krw_rate'),'TRX':db.setting(c,'trx_krw_rate')}
         addresses=[dict(x) for x in c.execute('SELECT * FROM deposit_addresses WHERE active=1')]
-    if rate<=0:return 0
     count=0
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=25) as client:
         for row in addresses:
-            params={'only_confirmed':'true','only_to':'true','contract_address':USDT_CONTRACT,'limit':200,'min_timestamp':row['scan_after_ms']}
-            fingerprint=None
-            collected=[]
-            exhausted=False
-            for page in range(30):
-                if fingerprint:params['fingerprint']=fingerprint
-                r=await client.get(f"{config.TRONGRID_URL}/v1/accounts/{row['address']}/transactions/trc20",params=params,headers={'TRON-PRO-API-KEY':config.TRONGRID_KEY})
-                r.raise_for_status();payload=r.json()
-                if not payload.get('success',True):raise ValueError('TRON provider response unsuccessful')
-                collected.extend(payload.get('data',[]))
-                next_fp=(payload.get('meta') or {}).get('fingerprint')
-                if not next_fp or next_fp==fingerprint:
-                    exhausted=True
-                    break
-                fingerprint=next_fp
-            if not exhausted:
-                log.error('Deposit pagination limit reached for address %s; no credits applied until complete reconciliation',row['address'])
-                continue
-            for t in collected:
-                if record(t,row['address'],row['user_id'],row['scan_after_ms'],rate):count+=1
+            for asset in ('USDT','TRX'):
+                rate=rates[asset]
+                if rate<=0:continue
+                path=f"/v1/accounts/{row['address']}/transactions"+('/trc20' if asset=='USDT' else '')
+                params={'only_confirmed':'true','only_to':'true','limit':200,'min_timestamp':row['scan_after_ms']}
+                if asset=='USDT':params['contract_address']=USDT_CONTRACT
+                fingerprint=None;collected=[];exhausted=False
+                for _ in range(100):
+                    if fingerprint:params['fingerprint']=fingerprint
+                    r=await client.get(config.TRONGRID_URL+path,params=params,headers={'TRON-PRO-API-KEY':config.TRONGRID_KEY})
+                    r.raise_for_status();payload=r.json()
+                    if not payload.get('success',True):raise ValueError('TronGrid unavailable')
+                    collected.extend(payload.get('data') or [])
+                    next_fp=(payload.get('meta') or {}).get('fingerprint')
+                    if not next_fp or next_fp==fingerprint:exhausted=True;break
+                    fingerprint=next_fp
+                if not exhausted:
+                    log.error('TRON %s pagination incomplete at %s; skipped',asset,row['address']);continue
+                for transfer in collected:
+                    if asset=='USDT':credited=record(transfer,row['address'],row['user_id'],row['scan_after_ms'],rate)
+                    else:credited=record_trx(transfer,row['address'],row['user_id'],row['scan_after_ms'],rate)
+                    if credited:count+=1
     return count
 
 async def run(stop):

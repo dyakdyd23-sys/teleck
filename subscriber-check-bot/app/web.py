@@ -80,7 +80,7 @@ def dashboard(user=Depends(admin)):
         body+=f'<label>{label} <input type="number" min="1" name="{key}" value="{settings[key]}" required></label>'
     body+='<button>설정 저장</button></form></main>'
     body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_tenths" placeholder="0.1원 단위 충전액" min="1" required><input name="reference" placeholder="고유 거래 참조값" required><button>충전</button></form></main>'
-    body+='<main><h2>TRC-20 USDT 자동충전</h2><p>회원별로 실제 통제 중인 고유 입금주소를 배정하세요. 설정 환율 0원인 경우 자동 지급은 중지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID" required><input name="address" placeholder="전용 TRON 주소" required><button>주소 등록</button></form><form method="post" action="/admin/usdt-rate"><input type="number" min="0" name="rate" placeholder="1 USDT 환산 원화 금액" required><button>환율 설정</button></form></main>'
+    body+='<main><h2>TRON 자동충전 · TRX / USDT(TRC-20)</h2><p>회원별로 실제 통제 중인 고유 입금주소를 배정하세요. 설정 환율 0원인 경우 자동 지급은 중지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID" required><input name="address" placeholder="전용 TRON 주소" required><button>주소 등록</button></form><form method="post" action="/admin/usdt-rate"><input type="number" min="0" name="rate" placeholder="1 USDT 환산 원화 금액" required><button>USDT 환율 설정</button></form><form method="post" action="/admin/trx-rate"><input type="number" min="0" name="rate" placeholder="1 TRX 환산 원화 금액" required><button>TRX 환율 설정</button></form></main>'
     body+='<main><h2>작업 목록</h2><table><tr><th>작업번호</th><th>사용자</th><th>상태</th><th>검수</th><th>완료</th><th>청구</th><th>환불</th></tr>'
     for j in jobs:body+=f'<tr><td><a href="/admin/job/{esc(j["id"])}">{esc(j["id"][:12])}</a></td><td>{j["user_id"]}</td><td>{esc(j["status"])}</td><td>{j["valid_count"]:,}</td><td>{j["success_count"]:,}</td><td>{db.money(j["charged_tenths"])}</td><td>{db.money(j["refunded_tenths"])}</td></tr>'
     body+='</table></main><main><h2>사용자별 잔액</h2><table><tr><th>Telegram ID</th><th>잔액</th></tr>'
@@ -148,17 +148,21 @@ def home(request:Request):
         balance=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]
         row=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
         rate=db.setting(c,'usdt_krw_rate')
+        trx_rate=db.setting(c,'trx_krw_rate')
         jobs=c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(uid,)).fetchall()
         deposits_rows=c.execute('SELECT txid,usdt_micro,krw_tenths FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
+        trx_rows=c.execute('SELECT txid,amount_sun,krw_tenths FROM trx_deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
     address=esc(row['address']) if row else '관리자 주소 배정 대기 중 · 입금하지 마세요'
-    body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p>USDT 충전: TRON(TRC-20)만 지원 · 입금주소: <strong>{address}</strong></p><p>자동 충전 적용 환율: {rate:,}원/USDT (입금 확인 시점의 설정 환율, 0이면 자동 반영 중지)</p><p>다른 네트워크 송금 금지. 체인 확인 후 원화 잔액으로 반영됩니다.</p></main>'
+    body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p>TRX / USDT(TRC-20) 자동충전: TRON 체인만 지원 · 공통 입금주소: <strong>{address}</strong></p><p>자동 충전 적용 환율: {rate:,}원/USDT · {trx_rate:,}원/TRX (입금 확인 시점의 설정 환율, 0이면 자동 반영 중지)</p><p>다른 네트워크 송금 금지. 체인 확인 후 원화 잔액으로 반영됩니다.</p></main>'
     body+='<main><h2>검수 파일</h2><form method="post" action="/customer/preview" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required><button>파일 분석</button></form></main>'
     body+='<main><h2>검수 작업</h2><table><tr><th>작업</th><th>상태</th><th>처리</th><th>결과</th></tr>'
     for j in jobs:
         downloads=(f'<a href="/customer/download/{j["id"]}?fmt=xlsx">Excel 다운로드</a>' if j['status'] in ('completed','failed') else '-')
         body+=f'<tr><td>{esc(j["id"][:12])}</td><td>{esc(j["status"])}</td><td>{j["success_count"]:,}/{j["valid_count"]:,}</td><td>{downloads}</td></tr>'
     body+='</table></main><main><h2>자동충전 기록</h2><table><tr><th>TXID</th><th>USDT</th><th>반영 금액</th></tr>'
-    for d in deposits_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["usdt_micro"]/1000000:.6f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
+    for d in deposits_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["usdt_micro"]/1000000:.3f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
+    body+='</table></main><main><h2>TRX 자동충전 기록</h2><table><tr><th>TXID</th><th>TRX</th><th>반영 금액</th></tr>'
+    for d in trx_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["amount_sun"]/1000000:.3f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
     body+='</table></main><form method="post" action="/logout"><button>로그아웃</button></form>'
     return wrap(body)
 
@@ -223,6 +227,15 @@ def admin_usdt_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
         c.execute("UPDATE settings SET value=? WHERE key='usdt_krw_rate'",(str(rate),))
         db.audit(c,user,'change_usdt_rate',detail=f'rate_krw={rate}')
     return RedirectResponse('/admin',303)
+@app.post('/admin/trx-rate')
+def admin_trx_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
+    guard_origin(request)
+    if not 0<=rate<=100000:raise HTTPException(400,'환율 범위 오류')
+    with db.transaction() as c:
+        c.execute("UPDATE settings SET value=? WHERE key='trx_krw_rate'",(str(rate),))
+        db.audit(c,user,'change_trx_rate',detail=f'rate_krw={rate}')
+    return RedirectResponse('/admin',303)
+
 @app.get('/admin/download/{jid}')
 def admin_download(jid:str,fmt:str='xlsx',days:str='all',user=Depends(admin)):
     with db.connect() as c:
@@ -261,7 +274,7 @@ def admin_members(q:str='',page:int=1,user=Depends(admin)):
         params=(f'%{q}%',f'%{q}%') if q else ()
         users=c.execute(f"""SELECT u.user_id,u.balance_tenths,u.created_at,a.username,
             (SELECT COUNT(*) FROM jobs j WHERE j.user_id=u.user_id) job_count,
-            (SELECT COUNT(*) FROM deposits d WHERE d.user_id=u.user_id) deposit_count
+            (SELECT COUNT(*) FROM deposits d WHERE d.user_id=u.user_id)+(SELECT COUNT(*) FROM trx_deposits t WHERE t.user_id=u.user_id) deposit_count
             FROM users u LEFT JOIN web_accounts a ON a.user_id=u.user_id {where}
             ORDER BY u.created_at DESC LIMIT 50 OFFSET ?""",(*params,(page-1)*50)).fetchall()
         count=c.execute(f'SELECT COUNT(*) FROM users u LEFT JOIN web_accounts a ON a.user_id=u.user_id {where}',params).fetchone()[0]
@@ -281,6 +294,7 @@ def admin_member(uid:int,user=Depends(admin)):
         jobs=c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100',(uid,)).fetchall()
         ledger=c.execute('SELECT * FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 100',(uid,)).fetchall()
         deposits=c.execute('SELECT * FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 50',(uid,)).fetchall()
+        trx_deposits=c.execute('SELECT * FROM trx_deposits WHERE user_id=? ORDER BY id DESC LIMIT 50',(uid,)).fetchall()
         events=c.execute('SELECT * FROM audit WHERE actor=? OR detail LIKE ? ORDER BY id DESC LIMIT 100',(str(uid),f'%user={uid},%')).fetchall()
         address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
     body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>입금 주소: {esc(address["address"] if address else "미등록")}</p></main>'
@@ -296,7 +310,9 @@ def admin_member(uid:int,user=Depends(admin)):
     body+='</table></main><main><h2>잔액 변동 및 정산 원장</h2><table><tr><th>일시</th><th>종류</th><th>금액</th><th>사유</th><th>처리자</th><th>참조값</th></tr>'
     for x in ledger:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["kind"])}</td><td>{db.money(x["amount_tenths"]) if x["amount_tenths"]>=0 else "-"+db.money(-x["amount_tenths"])}</td><td>{esc(x["reason"])}</td><td>{esc(x["actor"])}</td><td>{esc(x["idempotency_key"])}</td></tr>'
     body+='</table></main><main><h2>USDT 충전 이력</h2><table><tr><th>일시</th><th>TXID</th><th>USDT</th><th>지급 원화</th></tr>'
-    for x in deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["usdt_micro"]/1000000:.6f}</td><td>{db.money(x["krw_tenths"])}</td></tr>'
+    for x in deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["usdt_micro"]/1000000:.3f}</td><td>{db.money(x["krw_tenths"])}</td></tr>'
+    body+='</table></main><main><h2>TRX 충전 이력</h2><table><tr><th>일시</th><th>TXID</th><th>TRX</th><th>지급 원화</th></tr>'
+    for x in trx_deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["amount_sun"]/1000000:.3f}</td><td>{db.money(x["krw_tenths"])}</td></tr>' 
     body+='</table></main><main><h2>회원 활동 감사 로그</h2><table><tr><th>시각</th><th>활동</th><th>작업</th><th>내용</th></tr>'
     for x in events:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["action"])}</td><td>{esc(x["job_id"] or "-")}</td><td>{esc(x["detail"])}</td></tr>'
     return wrap(body+'</table></main>')
