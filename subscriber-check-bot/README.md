@@ -161,3 +161,13 @@ CUSTOMER_SUPPORT=@teleck777
 - 환경변수: `TELEGRAM_CHECK_API_URL=https://api.ftm111.pw/api/tg`, `TELEGRAM_CHECK_API_KEY=<비밀>`, `API_CONTRACT_FILE=./api_contract.legacy-template.json`, `TG_API_CONTRACT_VERIFIED=0`, `TRONGRID_API_KEY=<비밀>`, `GOOGLE_SHEET_CSV_URL=<공개 CSV URL>`, 기존 봇/관리자/DB 변수.
 - 새 테이블 `deposit_address_pool`은 기존 SQLite DB에 `CREATE TABLE IF NOT EXISTS`로 추가된다. 기존 Volume의 DB를 절대 삭제하거나 교체하지 말 것. 운영 전 백업 필수.
 - 자동 테스트는 제공업체 실제 서버/실입금 없이 로컬 단위 테스트로만 수행됨. 통합 검증이 끝나기 전 실자산 충전 및 유료 검수 운영 금지.
+
+
+## 검수 API 일수 구간 필터 (2026-10-16)
+- API의 `telegram_active`는 날짜/시간이 아니라 `1일 이내`, `3일 이내`, `7일 이내` 같은 **구간 문자열**로 판정합니다.
+- 구매자가 `1일` 선택: 1일 이내만, `3일`: 1일+3일, `7일`: 1일+3일+7일, `전체`: 가입 확인된 모든 결과를 포함합니다.
+- 날짜 문자열이나 미확인 구간은 임의 변환하지 않으며, 기간 필터에서는 제외합니다.
+- 가입 여부가 명확하게 true/가입 등으로 확인되지 않은 건은 구매자 결과에서 제외합니다. 업체 반환 필드 의미가 다르면 실제 응답 확인 후 명시적으로 매핑해야 합니다.
+- 관리자에게 Telegram으로 전송하는 Excel은 **검수 원본 전체(미가입 포함)**이며, 관리자 다운로드에서 `?days=raw`로 동일 데이터를 확인할 수 있습니다. 고객용 엔드포인트에서 `raw`는 금지됩니다.
+- `TG_API_COUNTRY=KR`을 Railway 환경변수에 설정할 수 있으며 레거시 API 요청 필드는 기존처럼 `conuntry`로 유지합니다.
+- 검수 API 실제 응답 검증 전 `TG_API_CONTRACT_VERIFIED=0` 유지, 임의로 1로 변경하지 마세요.

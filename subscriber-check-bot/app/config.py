@@ -29,3 +29,6 @@ BASE_URL=os.getenv('WEB_BASE_URL','').rstrip('/')
 
 # Published CSV URL of a Google Sheet with A1 = GOOGLEFINANCE("CURRENCY:USDKRW").
 GOOGLE_SHEET_CSV_URL = os.getenv("GOOGLE_SHEET_CSV_URL", "").strip()
+
+# Provider's country value; request field name is configured in contract (legacy: conuntry).
+TG_API_COUNTRY = os.getenv('TG_API_COUNTRY','KR').strip().upper()

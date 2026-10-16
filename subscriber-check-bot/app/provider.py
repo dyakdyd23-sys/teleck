@@ -45,7 +45,7 @@ class Contract:
             kw['params']={spec['task_id_query']:str(task_id)}
         if phones is not None:
             body={spec['phones_field']:phones}
-            if spec.get('country_field'):body[spec['country_field']]=spec.get('country_value','KR')
+            if spec.get('country_field'):body[spec['country_field']]=config.TG_API_COUNTRY or spec.get('country_value','KR')
             kw['json']=body
         async with httpx.AsyncClient(base_url=config.API_URL,timeout=45,follow_redirects=False) as client:
             r=await client.request(spec['method'].upper(),path,headers=headers,**kw)

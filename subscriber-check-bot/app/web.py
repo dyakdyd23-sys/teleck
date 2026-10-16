@@ -207,6 +207,7 @@ def customer_download(jid:str,fmt:str='xlsx',days:str='all',uid:int=Depends(cust
     with db.connect() as c:
         j=c.execute('SELECT user_id,status FROM jobs WHERE id=?',(jid,)).fetchone()
         if not j or j['user_id']!=uid or j['status'] not in ('completed','failed'):raise HTTPException(404)
+    if days=='raw':raise HTTPException(403,'관리자 전용 원본 결과')
     try:content,mime=export(jid,fmt,days)
     except Exception as e:raise HTTPException(400,str(e))
     with db.transaction() as c:c.execute('UPDATE result_archives SET delivered_to_user_at=COALESCE(delivered_to_user_at,?) WHERE job_id=?',(db.now(),jid))

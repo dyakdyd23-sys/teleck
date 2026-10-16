@@ -15,7 +15,7 @@ async def send_pending():
     async with Bot(config.TOKEN) as bot:
         for j in jobs:
             try:
-                content,_=export(j['id'],'xlsx','all')
+                content,_=export(j['id'],'xlsx','raw')
                 for admin in sorted(config.ADMIN_IDS):
                     with db.connect() as c:
                         if c.execute('SELECT 1 FROM admin_deliveries WHERE job_id=? AND admin_id=?',(j['id'],admin)).fetchone():continue
@@ -25,7 +25,7 @@ async def send_pending():
                     await bot.send_message(chat_id=admin,text=msg)
                     document_sent=int(len(content)<=45*1024*1024)
                     if document_sent:
-                        await bot.send_document(chat_id=admin,document=InputFile(io.BytesIO(content),filename=f'results_{j["id"][:12]}.xlsx'))
+                        await bot.send_document(chat_id=admin,document=InputFile(io.BytesIO(content),filename=f'results_raw_{j["id"][:12]}.xlsx'))
                     else:
                         await bot.send_message(chat_id=admin,text='결과 파일이 대용량이므로 관리자 페이지에서 내려받으세요.')
                     with db.transaction() as c:

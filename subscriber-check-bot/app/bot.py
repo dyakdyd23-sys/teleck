@@ -96,11 +96,12 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if data.startswith('job:'):
             jid=data[4:];j=next((x for x in service.list_jobs(uid) if x['id']==jid),None)
             if not j:return await q.message.reply_text('작업 접근 권한이 없습니다.')
-            kb=InlineKeyboardMarkup([[InlineKeyboardButton('📥 Excel 전체',callback_data='download:'+jid+':xlsx:all')],
+            kb=InlineKeyboardMarkup([[InlineKeyboardButton('📥 가입자 전체 Excel',callback_data='download:'+jid+':xlsx:all')],
               [InlineKeyboardButton(f'최근 {n}일',callback_data=f'download:{jid}:xlsx:{n}') for n in (1,3,7)]]) if j['status'] in ('completed','failed') else None
             return await q.message.reply_text(f"상태: {j['status']}\n신청: {j['valid_count']:,}\n확인: {j['success_count']:,}\n미처리: {j['failed_count']:,}\n청구: {db.money(j['charged_tenths'])}\n환불: {db.money(j['refunded_tenths'])}",reply_markup=kb)
         if data.startswith('download:'):
             _,jid,fmt,days=data.split(':')
+            if days not in ('all','1','3','7') or fmt!='xlsx':return await q.message.reply_text('허용되지 않는 결과 형식입니다.')
             with db.connect() as c:j=c.execute('SELECT user_id,status FROM jobs WHERE id=?',(jid,)).fetchone()
             if not j or j['user_id']!=uid or j['status'] not in ('completed','failed'):return await q.message.reply_text('다운로드 권한 또는 완료 내역이 없습니다.')
             content,_=export(jid,fmt,days)
