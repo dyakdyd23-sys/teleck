@@ -1,9 +1,23 @@
-import asyncio, uuid, logging, hashlib
+import asyncio, uuid, logging, hashlib, httpx
 from datetime import datetime,timezone,timedelta
 from . import db,config
 from .provider import Contract
 from .phones import normalize
 log=logging.getLogger(__name__)
+
+def provider_error_summary(exc):
+    """Safe diagnostic metadata; never log credentials, URLs with query, phone lists or response bodies."""
+    if isinstance(exc, httpx.HTTPStatusError):
+        response = exc.response
+        path = response.request.url.path if response.request else 'unknown'
+        # Path should contain only known API operations, not arbitrary or private URL parts.
+        operation = next((x for x in ('addTask', 'checkTask', 'exportPhone') if path.endswith('/'+x)), 'other')
+        return f'http_status={response.status_code} operation={operation}'
+    if isinstance(exc, httpx.TimeoutException):
+        return 'network_timeout'
+    if isinstance(exc, httpx.RequestError):
+        return 'network_request_error'
+    return f'error_type={type(exc).__name__}'
 
 async def cycle():
     try: provider=Contract.load()
@@ -39,9 +53,9 @@ async def cycle():
         except Exception as e:
             # If create response was lost, retry could charge provider twice: require admin reconciliation.
             with db.transaction() as c:
-                c.execute("UPDATE batches SET state='reconcile',error=?,updated_at=? WHERE id=?",(str(e)[:300],db.now(),b['id']))
+                c.execute("UPDATE batches SET state='reconcile',error=?,updated_at=? WHERE id=?",(provider_error_summary(e),db.now(),b['id']))
                 db.audit(c,'worker','provider_create_uncertain',b['job_id'],f'batch={b["id"]}')
-            log.warning('Provider create uncertain for batch %s: %s',b['id'],type(e).__name__)
+            log.warning('Provider create uncertain for batch %s: %s',b['id'],provider_error_summary(e))
     with db.transaction() as c:
         b=c.execute("SELECT * FROM batches WHERE state='processing' ORDER BY updated_at LIMIT 1").fetchone()
         if b:c.execute('UPDATE batches SET updated_at=? WHERE id=?',(db.now(),b['id']))
@@ -64,8 +78,8 @@ async def cycle():
             else:raise ValueError('unknown state')
         except Exception as e:
             with db.transaction() as c:
-                c.execute('UPDATE batches SET error=? WHERE id=?',(str(e)[:300],b['id']))
-            log.warning('Provider poll failed for batch %s: %s',b['id'],type(e).__name__)
+                c.execute('UPDATE batches SET error=? WHERE id=?',(provider_error_summary(e),b['id']))
+            log.warning('Provider poll failed for batch %s: %s',b['id'],provider_error_summary(e))
     with db.transaction() as c:
         for j in c.execute("SELECT id FROM jobs WHERE status IN ('pending','processing')").fetchall():
             jid=j['id']

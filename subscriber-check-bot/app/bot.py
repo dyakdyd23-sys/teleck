@@ -107,7 +107,12 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return await q.message.reply_text('📁 <b>내 검수 작업</b>\n조회할 작업을 선택해 주세요.',parse_mode='HTML',reply_markup=InlineKeyboardMarkup(buttons))
         if data=='help':return await q.message.reply_text('📘 <b>서비스 이용 안내</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>01</b>  Excel · CSV · TXT 파일 업로드\n<b>02</b>  번호 정규화·중복 자동 제거\n<b>03</b>  검수 수량·예상 비용 확인\n<b>04</b>  결제 후 작업 진행 상황 확인\n<b>05</b>  검수 완료 시 Excel 결과 수령\n\n📞 <b>고객센터</b>  @teleck777',parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 고객센터 열기',url='https://t.me/teleck777')]]))
         if data.startswith('submit:'):
-            jid=service.submit(uid,data[7:]);return await q.message.reply_text('검수 신청 완료. 작업번호: '+jid[:8]+'\n내 작업 메뉴에서 확인해 주세요.')
+            jid=service.submit(uid,data[7:])
+            await q.edit_message_reply_markup(reply_markup=None)
+            sent=await q.message.reply_text('📡 검수 작업 접수 완료\n작업번호: '+jid[:8]+'\n⏳ 진행 상황을 확인하고 있습니다.\n약 45초마다 자동 갱신됩니다.',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 지금 확인',callback_data='refresh:'+jid)]]))
+            with db.transaction() as c:
+                c.execute('INSERT OR REPLACE INTO job_watches(job_id,user_id,chat_id,message_id) VALUES(?,?,?,?)',(jid,uid,sent.chat_id,sent.message_id))
+            return
         if data.startswith('watch:'):
             jid=data[6:]
             with db.transaction() as c:

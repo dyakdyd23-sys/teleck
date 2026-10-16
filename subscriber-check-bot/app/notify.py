@@ -1,7 +1,7 @@
 """Admin-only result notifications. Sends customer-equivalent full CSV, if within Telegram limit."""
 import asyncio,io,logging
 from datetime import datetime,timezone
-from telegram import Bot,InputFile
+from telegram import Bot,InputFile,InlineKeyboardButton,InlineKeyboardMarkup
 from . import config,db
 from .export import export
 log=logging.getLogger(__name__)
@@ -44,7 +44,18 @@ async def refresh_watches():
                      '※ API의 별도 진행률이 아니라 확인된 결과 건수 기준입니다.\n'
                      + ('✅ 작업 종료 · 내 작업에서 결과 확인' if terminal else '🔄 약 45초마다 자동 갱신'))
                 if txt!=w['last_text']:
-                    await bot.edit_message_text(chat_id=w['chat_id'],message_id=w['message_id'],text=txt)
+                    controls=[]
+                    if terminal:
+                        controls=[[InlineKeyboardButton('📁 내 작업 / 결과 확인',callback_data='job:'+w['job_id'])]]
+                    elif w['cancel_requested_at']:
+                        controls=[[InlineKeyboardButton('🔄 상태 확인',callback_data='refresh:'+w['job_id'])]]
+                    elif elapsed>=300:
+                        controls=[[InlineKeyboardButton('⏸ 5분 무진전 · 취소 요청',callback_data='canceljob:'+w['job_id'])],
+                                  [InlineKeyboardButton('🔄 상태 확인',callback_data='refresh:'+w['job_id'])]]
+                    else:
+                        controls=[[InlineKeyboardButton('🔄 지금 확인',callback_data='refresh:'+w['job_id'])]]
+                    await bot.edit_message_text(chat_id=w['chat_id'],message_id=w['message_id'],text=txt,
+                                                reply_markup=InlineKeyboardMarkup(controls))
                     with db.transaction() as c:c.execute('UPDATE job_watches SET last_text=? WHERE job_id=? AND user_id=?',(txt,w['job_id'],w['user_id']))
                 if terminal:
                     with db.transaction() as c:c.execute('DELETE FROM job_watches WHERE job_id=? AND user_id=?',(w['job_id'],w['user_id']))
