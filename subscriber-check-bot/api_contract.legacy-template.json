@@ -1,11 +1,46 @@
 {
-  "_notice": "UNVERIFIED historical integration. Do not activate until successful API sandbox/curl tests. Response mappings are guesses and MUST be verified.",
+  "_notice": "Phase76 source-derived API contract. Verify with provider on live connection before billing.",
   "auth_header": "token",
   "auth_prefix": "",
-  "create": {"method":"POST","path":"/addTask","phones_field":"phone_numbers","country_field":"conuntry","country_value":"KR","task_id_path":"id"},
-  "status": {"method":"GET","path":"/checkTask","task_id_query":"id","state_path":"status"},
-  "result": {"method":"GET","path":"/exportPhone","task_id_query":"id","response_format":"csv","rows_path":"rows","phone_field":"phone_number","joined_field":"telegram_check_status","uid_field":"telegram_id","username_field":"telegram_username","last_active_field":"telegram_active"},
-  "state_map":{"0":"pending","1":"processing","2":"completed","3":"failed","pending":"pending","processing":"processing","completed":"completed","failed":"failed","cancelled":"cancelled"},
-  "max_batch_size":50000,
-  "requests_per_minute":10
+  "create": {
+    "method": "POST",
+    "path": "/addTask",
+    "phones_field": "phone_numbers",
+    "country_field": "conuntry",
+    "country_value": "KR",
+    "task_id_path": "id",
+    "request_format": "multipart_file",
+    "file_field": "file"
+  },
+  "status": {
+    "method": "GET",
+    "path": "/checkTask",
+    "task_id_query": "id",
+    "state_path": "status"
+  },
+  "result": {
+    "method": "GET",
+    "path": "/exportPhone",
+    "task_id_query": "id",
+    "response_format": "csv",
+    "rows_path": "rows",
+    "phone_field": "phone_number",
+    "joined_field": "telegram_check_status",
+    "uid_field": "telegram_id",
+    "username_field": "telegram_username",
+    "last_active_field": "telegram_active"
+  },
+  "state_map": {
+    "0": "pending",
+    "1": "processing",
+    "2": "completed",
+    "3": "failed",
+    "pending": "pending",
+    "processing": "processing",
+    "completed": "completed",
+    "failed": "failed",
+    "cancelled": "cancelled"
+  },
+  "max_batch_size": 50000,
+  "requests_per_minute": 10
 }

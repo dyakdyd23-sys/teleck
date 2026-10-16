@@ -1,5 +1,5 @@
 """Configuration-driven provider adapter; no invented endpoint or response keys."""
-import json, csv, io, httpx
+import json, csv, io, httpx, os
 from urllib.parse import urlsplit
 from . import config
 
@@ -8,7 +8,7 @@ class Contract:
     @classmethod
     def load(cls):
         if not config.API_URL.startswith('https://') or not config.API_KEY:raise ValueError('실제 HTTPS API 주소 및 인증키가 필요합니다.')
-        if __import__('os').getenv('TG_API_CONTRACT_VERIFIED') != '1':raise ValueError('실제 응답 검증 전 요청·결제 차단: TG_API_CONTRACT_VERIFIED 미설정')
+        if os.getenv('TG_API_CONTRACT_VERIFIED') != '1':raise ValueError('실제 API 테스트 전 신청 차단: TG_API_CONTRACT_VERIFIED=1 설정 필요')
         host=urlsplit(config.API_URL)
         if not host.hostname or host.username or host.password:raise ValueError('API URL 오류')
         d=json.loads(config.CONTRACT.read_text(encoding='utf-8'))
@@ -44,31 +44,68 @@ class Contract:
         if task_id and spec.get('task_id_query'):
             kw['params']={spec['task_id_query']:str(task_id)}
         if phones is not None:
-            body={spec['phones_field']:phones}
-            if spec.get('country_field'):body[spec['country_field']]=config.TG_API_COUNTRY or spec.get('country_value','KR')
-            kw['json']=body
+            if spec.get('request_format')=='multipart_file':
+                content=('\n'.join(phones)+'\n').encode('utf-8')
+                kw['files']={spec.get('file_field','file'):('phones.txt',content,'text/plain')}
+                kw['data']={'filter_type':os.getenv('TG_API_FILTER_TYPE','1'), 'conuntry':config.TG_API_COUNTRY}
+            else:
+                body={spec['phones_field']:phones}
+                if spec.get('country_field'):body[spec['country_field']]=config.TG_API_COUNTRY or spec.get('country_value','KR')
+                kw['json']=body
         async with httpx.AsyncClient(base_url=config.API_URL,timeout=45,follow_redirects=False) as client:
             r=await client.request(spec['method'].upper(),path,headers=headers,**kw)
             r.raise_for_status()
             if spec.get('response_format')=='csv':
-                return {'rows':list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))}
+                raw=None
+                for encoding in ('utf-8-sig','utf-8','gb18030','cp949'):
+                    try:raw=r.content.decode(encoding);break
+                    except UnicodeDecodeError:continue
+                if raw is None:raise ValueError('결과 CSV 인코딩 오류')
+                parsed=list(csv.reader(io.StringIO(raw)))
+                return {'rows':parsed}
             return r.json()
     async def create(self,phones):
         result=await self.call('create',phones=phones)
+        if int(result.get('code',0))!=1:raise ValueError('제공업체 작업 생성 거절: code='+str(result.get('code')))
         task=self._value(result,self.d['create']['task_id_path'])
         if task is None or str(task)=='':raise ValueError('외부 API 작업 ID 누락')
         return str(task)
     async def status(self,task_id):
         result=await self.call('status',task_id)
-        state=self._value(result,self.d['status']['state_path'])
-        if str(state) not in self.d['state_map']:raise ValueError('외부 API 상태 매핑 누락')
-        return self.d['state_map'][str(state)]
+        if not isinstance(result,dict):raise ValueError('외부 API 상태 응답 오류')
+        total=int(result.get('total') or 0); checked=int(result.get('has_check') or 0)
+        if result.get('result_file') or (total>0 and checked>=total):return 'completed'
+        state=result.get('status')
+        if str(state) in self.d['state_map']:
+            mapped=self.d['state_map'][str(state)]
+            return 'processing' if mapped=='completed' else mapped
+        return 'processing'
     async def results(self,task_id):
         result=await self.call('result',task_id)
         rows=self._value(result,self.d['result']['rows_path'])
         if not isinstance(rows,list):raise ValueError('외부 API 결과 형식 불일치')
-        spec=self.d['result'];data=[]
-        for row in rows:
+        data=[]
+        for index,row in enumerate(rows):
+            if isinstance(row, list):
+                # Phase76 CSV: phone at column 0, UID column 1, username column 2,
+                # last-activity day count in final column. Header rows are ignored.
+                if len(row)<4:continue
+                from .phones import normalize
+                phone=normalize(row[0])
+                if not phone:continue
+                uid=row[1].strip() if row[1] else None
+                username=row[2].strip() if row[2] else None
+                activity=row[-1].strip()
+                try:
+                    day=float(activity)
+                    bucket='1일 이내' if day<=1 else '3일 이내' if day<=3 else '7일 이내' if day<=7 else '7일 초과'
+                    if day<0:bucket='확인 불가'
+                except (ValueError,TypeError):
+                    bucket=activity if activity in ('1일 이내','3일 이내','7일 이내','7일 초과') else '확인 불가'
+                data.append({'phone':phone,'joined':'true','uid':uid if uid!='0' else None,
+                    'username':username if username!='0' else None,'last_active':bucket})
+                continue
+            spec=self.d['result']
             phone=self._value(row,spec['phone_field'])
             joined=self._value(row,spec['joined_field'])
             if not isinstance(joined,(str,bool,int)) and joined is not None:raise ValueError('가입 결과 형식 불일치')

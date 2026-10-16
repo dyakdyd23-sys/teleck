@@ -197,3 +197,15 @@ CUSTOMER_SUPPORT=@teleck777
 - 실제 처리 건수 증가 없이 300초 이상 지나면 취소 요청 버튼이 노출됩니다. 취소 요청은 API에 전송된 작업의 즉시 중단이나 즉시 전액 환불을 보장하지 않으며 미처리 건 정산 대조가 선행됩니다.
 - 이미 접수된 과거 작업은 `내 작업`에서 조회 후 `📡 자동 갱신`을 눌러 현황 메시지를 등록할 수 있습니다.
 - 배포 후에도 예전 문구가 나온다면 Railway Deployment가 새 커밋의 코드를 실행하는지 Root Directory를 점검하십시오.
+
+## Phase 76 API compatibility fix (2026-10-16)
+
+The provider implementation now follows the actual request and polling code from the previously working Phase76 archive:
+- `POST /addTask`: multipart `file=phones.txt` plus form `filter_type` (default `1`) and provider-specific `conuntry=KR`; `token` HTTP header.
+- Create success requires `code=1` and nonempty `id`.
+- `GET /checkTask?id=...`: complete when `result_file` is provided or `total > 0` and `has_check >= total`.
+- `GET /exportPhone?id=...`: read CSV content, first column phone, second UID, third username, final column elapsed day count. Convert days to Korean activity buckets for the existing filtering.
+
+Railway: Keep `API_CONTRACT_FILE=./api_contract.legacy-template.json`, `TG_API_COUNTRY=KR`, `TG_API_FILTER_TYPE=1`, the actual `TELEGRAM_CHECK_API_URL` and `TELEGRAM_CHECK_API_KEY`. `TG_API_CONTRACT_VERIFIED=1` must only be set after confirming this specific provider still uses the Phase76 API. **No real API request was performed in the local tests.**
+
+Existing batches in `reconcile` state are intentionally NOT resubmitted automatically, as an upstream job may already have been accepted. Reconcile them with the provider before initiating new jobs. Preserve Railway's existing data volume and database.
