@@ -1,4 +1,4 @@
-import asyncio, uuid, logging, hashlib, httpx
+import asyncio, uuid, logging, hashlib, json, httpx
 from datetime import datetime,timezone,timedelta
 from . import db,config
 from .provider import Contract
@@ -17,6 +17,26 @@ def provider_error_summary(exc):
         return 'network_timeout'
     if isinstance(exc, httpx.RequestError):
         return 'network_request_error'
+    if isinstance(exc, ValueError):
+        # Only report known, intentionally non-sensitive validation messages.
+        reason = str(exc)
+        if reason.startswith('제공업체 작업 생성 거절: code='):
+            code = reason.split('code=', 1)[1]
+            # API code can be untrusted; only expose a small numeric code.
+            return f'provider_rejected code={code}' if code.lstrip('-').isdigit() and len(code) <= 8 else 'provider_rejected invalid_code'
+        safe_reasons = {
+            '외부 API 작업 ID 누락': 'provider_missing_task_id',
+            'API 생성 응답 형식 오류': 'provider_create_invalid_response',
+            '잘못된 전화번호는 검수 API에 전송하지 않습니다.': 'invalid_phone_before_submit',
+            '결과 CSV 인코딩 오류': 'csv_decode_error',
+            '외부 API 상태 응답 오류': 'provider_status_invalid',
+            '외부 API 결과 형식 불일치': 'provider_result_invalid',
+            '가입 결과 형식 불일치': 'joined_field_invalid',
+            'unknown state': 'provider_unknown_state',
+        }
+        return safe_reasons.get(reason, 'validation_error')
+    if isinstance(exc, json.JSONDecodeError):
+        return 'provider_invalid_json'
     return f'error_type={type(exc).__name__}'
 
 async def cycle():

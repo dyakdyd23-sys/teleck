@@ -45,14 +45,19 @@ class Contract:
             kw['params']={spec['task_id_query']:str(task_id)}
         if phones is not None:
             if spec.get('request_format')=='multipart_file':
-                content=('\n'.join(phones)+'\n').encode('utf-8')
+                # Provider expects KR country-code numbers; DB and user exports remain local 010.
+                from .phones import normalize
+                normalized=[normalize(phone) for phone in phones]
+                if any(phone is None for phone in normalized):
+                    raise ValueError('잘못된 전화번호는 검수 API에 전송하지 않습니다.')
+                content=('\n'.join('82'+phone[1:] for phone in normalized)+'\n').encode('utf-8')
                 kw['files']={spec.get('file_field','file'):('phones.txt',content,'text/plain')}
                 kw['data']={'filter_type':os.getenv('TG_API_FILTER_TYPE','1'), 'conuntry':config.TG_API_COUNTRY}
             else:
                 body={spec['phones_field']:phones}
                 if spec.get('country_field'):body[spec['country_field']]=config.TG_API_COUNTRY or spec.get('country_value','KR')
                 kw['json']=body
-        async with httpx.AsyncClient(base_url=config.API_URL,timeout=45,follow_redirects=False) as client:
+        async with httpx.AsyncClient(base_url=config.API_URL,timeout=60,follow_redirects=False) as client:
             r=await client.request(spec['method'].upper(),path,headers=headers,**kw)
             r.raise_for_status()
             if spec.get('response_format')=='csv':
@@ -66,7 +71,8 @@ class Contract:
             return r.json()
     async def create(self,phones):
         result=await self.call('create',phones=phones)
-        if int(result.get('code',0))!=1:raise ValueError('제공업체 작업 생성 거절: code='+str(result.get('code')))
+        if not isinstance(result,dict):raise ValueError('API 생성 응답 형식 오류')
+        if str(result.get('code', ''))!='1':raise ValueError('제공업체 작업 생성 거절: code='+str(result.get('code')))
         task=self._value(result,self.d['create']['task_id_path'])
         if task is None or str(task)=='':raise ValueError('외부 API 작업 ID 누락')
         return str(task)

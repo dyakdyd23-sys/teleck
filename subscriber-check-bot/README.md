@@ -209,3 +209,17 @@ The provider implementation now follows the actual request and polling code from
 Railway: Keep `API_CONTRACT_FILE=./api_contract.legacy-template.json`, `TG_API_COUNTRY=KR`, `TG_API_FILTER_TYPE=1`, the actual `TELEGRAM_CHECK_API_URL` and `TELEGRAM_CHECK_API_KEY`. `TG_API_CONTRACT_VERIFIED=1` must only be set after confirming this specific provider still uses the Phase76 API. **No real API request was performed in the local tests.**
 
 Existing batches in `reconcile` state are intentionally NOT resubmitted automatically, as an upstream job may already have been accepted. Reconcile them with the provider before initiating new jobs. Preserve Railway's existing data volume and database.
+
+
+## 2026-10-16 가입자 검수 API 전화번호 전송 수정
+- 파일 업로드 시 `010...`과 `8210...`은 모두 내부적으로 `010...`으로 정규화하고 중복 제거합니다.
+- 제공업체 `addTask` multipart `phones.txt`에는 `8210...` 숫자 형식으로 변환하여 전송합니다. 고객 Excel 출력은 종전 `010-0000-0000`입니다.
+- 검수 API 요청 제한시간을 60초로 조정했습니다.
+- 종전 `reconcile` 배치는 자동 재시도하거나 임의 환불하지 않습니다. 관리자 대조가 필요합니다.
+- 실제 API 연결 성공은 별도 검증이 필요하며 기존 영구 Volume과 DB를 보존해야 합니다.
+
+
+## API 생성 ValueError 진단 (2026-10-16)
+
+`provider_create_uncertain` 오류가 `error_type=ValueError`로만 표시되던 문제를 수정했습니다.
+새 로그는 민감 데이터 없이 `provider_rejected code=N`, `provider_missing_task_id`, `provider_create_invalid_response`, `provider_invalid_json` 등으로 구분합니다. 기존 `reconcile` 배치는 자동 재전송하지 않습니다. 구버전 작업 오류는 소급 변경되지 않습니다.

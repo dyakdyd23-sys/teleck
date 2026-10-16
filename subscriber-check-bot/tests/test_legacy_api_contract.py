@@ -15,7 +15,7 @@ def test_phase76_contract(monkeypatch):
             if path=='/addTask':
                 assert kw['data']=={'filter_type':'1','conuntry':'KR'}
                 assert kw['files']['file'][0]=='phones.txt'
-                assert b'01012345678' in kw['files']['file'][1]
+                assert kw['files']['file'][1]==b'821012345678\n'
                 return httpx.Response(200,json={'code':1,'id':'some-task'},request=httpx.Request(method,'https://example.org'+path))
             if path=='/checkTask':
                 assert kw['params']=={'id':'some-task'}
