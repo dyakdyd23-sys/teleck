@@ -25,3 +25,6 @@ TRONGRID_KEY = os.getenv('TRONGRID_API_KEY','')
 TRONGRID_URL = os.getenv('TRONGRID_URL','https://api.trongrid.io').rstrip('/')
 DEPOSIT_POLL_SECONDS = max(60,int(os.getenv('DEPOSIT_POLL_SECONDS','120')))
 BASE_URL=os.getenv('WEB_BASE_URL','').rstrip('/')
+
+# Optional comma/newline separated operator-controlled deposit addresses. NEVER private keys.
+TRON_DEPOSIT_ADDRESSES = [a.strip() for a in os.getenv('TRON_DEPOSIT_ADDRESSES','').replace('\n',',').split(',') if a.strip()]

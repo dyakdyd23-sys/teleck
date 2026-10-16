@@ -143,6 +143,7 @@ def customer_form(title,action,fields):
 @app.get('/')
 def home(request:Request):
     uid=accounts.user_from_token(request.cookies.get('checker_session',''))
+    if uid is not None:deposits.auto_assign(uid)
     if uid is None:return wrap('<main><h2>가입자 검수봇</h2><p>검수 신청 및 결과 확인을 위한 회원 페이지입니다.</p><a href="/register">회원가입</a> · <a href="/login">로그인</a></main>')
     with db.connect() as c:
         balance=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]

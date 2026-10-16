@@ -76,3 +76,22 @@ def test_trx_reject_failed_and_contract_calls(store):
     deposits.assign(uid,address)
     raw={'txID':'b'*64,'ret':[{'contractRet':'REVERT'}],'raw_data':{'timestamp':9999999999999,'contract':[{'type':'TriggerSmartContract','parameter':{'value':{'amount':1000000}}}]}}
     assert not deposits.record_trx(raw,address,uid,0,1000)
+
+def test_automatic_address_pool_never_reuses(store,monkeypatch):
+    a='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
+    b=deposits.tron_hex_to_base58('41'+'ab'*20)
+    monkeypatch.setattr(config,'TRON_DEPOSIT_ADDRESSES',[a,b])
+    u1=accounts.register('auto_buyer_1','longenough-password-123')
+    u2=accounts.register('auto_buyer_2','longenough-password-123')
+    u3=accounts.register('auto_buyer_3','longenough-password-123')
+    assert deposits.auto_assign(u1)==a
+    assert deposits.auto_assign(u1)==a
+    assert deposits.auto_assign(u2)==b
+    assert deposits.auto_assign(u3) is None
+    with db.connect() as c:
+        assert c.execute('SELECT COUNT(*) FROM deposit_addresses').fetchone()[0]==2
+
+def test_invalid_address_pool_rejected(store,monkeypatch):
+    monkeypatch.setattr(config,'TRON_DEPOSIT_ADDRESSES',['invalid_address'])
+    uid=accounts.register('auto_buyer_bad','longenough-password-123')
+    with pytest.raises(ValueError,match='주소'):deposits.auto_assign(uid)

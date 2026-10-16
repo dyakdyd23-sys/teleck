@@ -25,12 +25,30 @@ def assign(user_id,address):
         c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))
         db.audit(c,'admin','assign_deposit_address',detail=f'user={user_id},address={address}')
 
+def auto_assign(user_id):
+    """Allocate an unused operator-controlled address atomically; never recycle addresses."""
+    addresses=config.TRON_DEPOSIT_ADDRESSES
+    if not addresses:return None
+    if len(set(addresses))!=len(addresses) or not all(valid_tron_address(x) for x in addresses):
+        raise ValueError('TRON_DEPOSIT_ADDRESSES 설정에 중복 또는 잘못된 주소가 있습니다.')
+    with db.transaction() as c:
+        existing=c.execute('SELECT address FROM deposit_addresses WHERE user_id=? AND active=1',(user_id,)).fetchone()
+        if existing:return existing['address']
+        if not c.execute('SELECT 1 FROM users WHERE user_id=?',(user_id,)).fetchone():raise ValueError('회원 없음')
+        used={r['address'] for r in c.execute('SELECT address FROM deposit_addresses')}
+        address=next((x for x in addresses if x not in used),None)
+        if not address:return None
+        # The timestamp is recorded at allocation; older transactions are never credited.
+        c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))
+        db.audit(c,'system','auto_assign_deposit_address',detail=f'user={user_id},address={address}')
+        return address
+
 def coin_display(micro):
     return f'{Decimal(micro)/Decimal(1_000_000):,.3f}'
 
 def record_trx(transfer,address,user_id,assigned_after,rate):
     """Credit only confirmed, successful native TransferContract, not smart contract calls."""
-    if rate <= 0 or not transfer.get('ret') or transfer['ret'][0].get('contractRet') != 'SUCCESS':return False
+    if rate <= 0 or not isinstance(transfer.get('ret'),list) or not transfer['ret'] or transfer['ret'][0].get('contractRet') != 'SUCCESS':return False
     raw=transfer.get('raw_data') or {}
     contracts=raw.get('contract') or []
     if len(contracts)!=1 or contracts[0].get('type')!='TransferContract':return False
@@ -65,12 +83,15 @@ def tron_hex_to_base58(value):
 
 def record(transfer,address,user_id,assigned_after,rate):
     if transfer.get('to')!=address or transfer.get('type')!='Transfer':return False
+    if transfer.get('confirmed') is False or transfer.get('contractRet') not in (None,'SUCCESS'):return False
     token=transfer.get('token_info') or {}
     if token.get('address')!=USDT_CONTRACT or str(token.get('decimals'))!='6':return False
     txid=transfer.get('transaction_id')
     if not isinstance(txid,str) or len(txid)!=64 or any(x not in '0123456789abcdefABCDEF' for x in txid):return False
-    micro=int(transfer.get('value','0'))
-    ts=int(transfer.get('block_timestamp',0))
+    try:
+        micro=int(transfer.get('value','0'))
+        ts=int(transfer.get('block_timestamp',0))
+    except (TypeError,ValueError):return False
     if ts<assigned_after or micro<=0 or rate<=0:return False
     # Different transfers within same tx cannot be safely differentiated by this endpoint.
     # One deposit per txid is accepted; ambiguous additional events must be reconciled.
