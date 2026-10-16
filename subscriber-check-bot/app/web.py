@@ -82,6 +82,16 @@ def dashboard(user=Depends(admin)):
     body+='<button>설정 저장</button></form></main>'
     body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_tenths" placeholder="0.1원 단위 충전액" min="1" required><input name="reference" placeholder="고유 거래 참조값" required><button>충전</button></form></main>'
     body+='<main><h2>USDT · TRC-20 자동충전</h2><p>환율은 Google Sheets A1(USD/KRW)에서 자동 조회합니다. 충전은 USDT(TRC-20)만 지원합니다. TRX 입금은 잔액에 반영되지 않습니다.</p><p>환율 상태: '+('정상 · '+str(sheet_rate.available_rate())+'원/USDT' if sheet_rate.available_rate() else '미설정 또는 갱신 실패 · 충전 중단')+'</p><form method="post" action="/admin/deposit-pool"><input name="address" placeholder="새 TRON 수신 주소 (회원 자동 배정용)" required><button>주소 풀에 추가</button></form><p>주소는 관리자에서 일괄 관리하며 회원이 충전 메뉴를 열 때 빈 주소를 자동 배정합니다. 기존 회원 주소는 유지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID (수동 배정)" required><input name="address" placeholder="전용 TRON 주소" required><button>지정 회원 배정</button></form></main>'
+    with db.connect() as c:
+        invoices=c.execute("SELECT r.*,u.balance_tenths FROM topup_requests r JOIN users u ON u.user_id=r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
+        unmatched=c.execute("SELECT * FROM unmatched_deposits ORDER BY seen_at DESC LIMIT 50").fetchall()
+    body+='<main><h2>USDT 충전 신청 내역</h2><p>송금 요청액·정확한 수량·상태 및 거래 식별자를 조회합니다. 미일치 입금은 자동 적립되지 않습니다.</p><table><tr><th>신청번호</th><th>회원</th><th>신청액</th><th>USDT</th><th>환율</th><th>상태</th><th>TXID</th></tr>'
+    for r in invoices:
+        body+=f'<tr><td>{esc(r["id"][:12])}</td><td>{r["user_id"]}</td><td>{db.money(r["requested_tenths"])}</td><td>{r["usdt_milli"]/1000:.3f}</td><td>{r["rate_krw"]:,}</td><td>{esc(r["status"])}</td><td>{esc(r["txid"] or "-")}</td></tr>'
+    body+='</table></main><main><h2>자동 반영 보류 입금 · 관리자 대조 필요</h2><p>입금 확인은 됐으나 유효한 신청과 일치하지 않은 거래입니다. 거래내역을 직접 확인한 뒤 기존 수동 잔액 조정 기능으로 별도 정산하세요. 중복 지급에 주의하세요.</p><table><tr><th>회원</th><th>USDT</th><th>TXID</th><th>사유</th></tr>'
+    for r in unmatched:
+        body+=f'<tr><td>{r["user_id"]}</td><td>{r["usdt_micro"]/1000000:.6f}</td><td>{esc(r["txid"])}</td><td>{esc(r["reason"])}</td></tr>'
+    body+='</table></main>'
     body+='<main><h2>작업 목록</h2><table><tr><th>작업번호</th><th>사용자</th><th>상태</th><th>검수</th><th>완료</th><th>청구</th><th>환불</th></tr>'
     for j in jobs:body+=f'<tr><td><a href="/admin/job/{esc(j["id"])}">{esc(j["id"][:12])}</a></td><td>{j["user_id"]}</td><td>{esc(j["status"])}</td><td>{j["valid_count"]:,}</td><td>{j["success_count"]:,}</td><td>{db.money(j["charged_tenths"])}</td><td>{db.money(j["refunded_tenths"])}</td></tr>'
     body+='</table></main><main><h2>사용자별 잔액</h2><table><tr><th>Telegram ID</th><th>잔액</th></tr>'

@@ -66,6 +66,16 @@ def init():
         CREATE TABLE IF NOT EXISTS deposit_addresses(address TEXT PRIMARY KEY,user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id),assigned_at TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,scan_after_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS deposits(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(user_id), txid TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE, address TEXT NOT NULL,usdt_micro INTEGER NOT NULL,krw_tenths INTEGER NOT NULL,rate_krw INTEGER NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id,confirmed_at);
+        CREATE TABLE IF NOT EXISTS topup_requests(
+          id TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(user_id),
+          address TEXT NOT NULL, requested_tenths INTEGER NOT NULL, usdt_milli INTEGER NOT NULL,
+          rate_krw INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending','completed','expired','cancelled')),
+          created_at TEXT NOT NULL,expires_at_ms INTEGER NOT NULL,
+          txid TEXT UNIQUE,completed_at TEXT);
+        CREATE INDEX IF NOT EXISTS idx_topup_user ON topup_requests(user_id,status);
+        CREATE TABLE IF NOT EXISTS unmatched_deposits(
+          txid TEXT PRIMARY KEY,user_id INTEGER NOT NULL,address TEXT NOT NULL,usdt_micro INTEGER NOT NULL,
+          reason TEXT NOT NULL,seen_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS trx_deposits(id INTEGER PRIMARY KEY AUTOINCREMENT,user_id INTEGER NOT NULL REFERENCES users(user_id),txid TEXT NOT NULL UNIQUE,address TEXT NOT NULL,amount_sun INTEGER NOT NULL,krw_tenths INTEGER NOT NULL,rate_krw INTEGER NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_trx_deposits_user ON trx_deposits(user_id,confirmed_at);
         CREATE UNIQUE INDEX IF NOT EXISTS idx_deposits_txid ON deposits(txid);

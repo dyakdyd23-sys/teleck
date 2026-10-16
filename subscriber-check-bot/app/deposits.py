@@ -1,6 +1,6 @@
 """TRC-20 USDT incoming transfer confirmation. Does not create wallets or hold keys."""
-import asyncio,logging,time,hashlib
-from decimal import Decimal,ROUND_DOWN
+import asyncio,logging,time,hashlib,uuid
+from decimal import Decimal,ROUND_DOWN,ROUND_CEILING,InvalidOperation
 from datetime import datetime,timezone
 import httpx
 from . import db,config,sheet_rate
@@ -49,6 +49,45 @@ def auto_assign(user_id):
         db.audit(c,'system','auto_assign_deposit_address',detail=f'user={user_id},address={address}')
         return address
 
+
+QUOTE_DURATION_SECONDS=1800
+
+def create_topup_request(user_id, amount, rate):
+    """Lock the rate for a 30-minute invoice. USD/KRW is the operator-selected USDT proxy."""
+    try:
+        krw=Decimal(str(amount))
+        if not krw.is_finite() or krw.as_tuple().exponent < -1 or krw < 1000 or krw > 10000000:
+            raise ValueError('충전 신청은 1,000원~10,000,000원, 최대 0.1원 단위로 입력해 주세요.')
+        tenths=int(krw*10)
+        if rate<=0:raise ValueError('환율을 불러올 수 없습니다. 잠시 후 다시 시도해 주세요.')
+        milli=int((krw*Decimal(1000)/Decimal(rate)).to_integral_value(rounding=ROUND_CEILING))
+        if milli<=0:raise ValueError('충전 수량 계산 오류')
+    except (InvalidOperation,TypeError) as exc:raise ValueError('충전 금액 형식이 올바르지 않습니다.') from exc
+    address=auto_assign(user_id)
+    if not address:raise ValueError('충전주소가 준비되지 않았습니다. 고객센터에 문의해 주세요.')
+    if not config.TRONGRID_KEY:raise ValueError('입금 확인 서비스가 준비되지 않았습니다.')
+    with db.transaction() as c:
+        c.execute("UPDATE topup_requests SET status='expired' WHERE user_id=? AND status='pending' AND expires_at_ms<=?",(user_id,int(time.time()*1000)))
+        existing=c.execute("SELECT 1 FROM topup_requests WHERE user_id=? AND status='pending'",(user_id,)).fetchone()
+        if existing:raise ValueError('진행 중인 충전 신청이 있습니다. 완료하거나 만료된 후 다시 신청해 주세요.')
+        rid=uuid.uuid4().hex
+        expiry=int(time.time()*1000)+QUOTE_DURATION_SECONDS*1000
+        c.execute("INSERT INTO topup_requests(id,user_id,address,requested_tenths,usdt_milli,rate_krw,status,created_at,expires_at_ms) VALUES(?,?,?,?,?,?,'pending',?,?)",(rid,user_id,address,tenths,milli,int(rate),db.now(),expiry))
+        db.audit(c,str(user_id),'topup_requested',detail=f'id={rid};krw_tenths={tenths};usdt_milli={milli};rate={rate}')
+    return {'id':rid,'address':address,'requested_tenths':tenths,'usdt_milli':milli,'rate':int(rate),'expires_at_ms':expiry}
+
+def active_topup(user_id):
+    with db.transaction() as c:
+        c.execute("UPDATE topup_requests SET status='expired' WHERE user_id=? AND status='pending' AND expires_at_ms<=?",(user_id,int(time.time()*1000)))
+        row=c.execute("SELECT * FROM topup_requests WHERE user_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1",(user_id,)).fetchone()
+    return dict(row) if row else None
+
+def cancel_topup(user_id):
+    with db.transaction() as c:
+        count=c.execute("UPDATE topup_requests SET status='cancelled' WHERE user_id=? AND status='pending'",(user_id,)).rowcount
+        if count:db.audit(c,str(user_id),'topup_cancelled')
+    return count
+
 def coin_display(micro):
     return f'{Decimal(micro)/Decimal(1_000_000):,.3f}'
 
@@ -65,34 +104,44 @@ def tron_hex_to_base58(value):
     while number:number,r=divmod(number,58);out=alphabet[r]+out
     return out
 
-def record(transfer,address,user_id,assigned_after,rate):
+def record(transfer,address,user_id,assigned_after,rate=None):
+    """Credit only an exact, confirmed USDT transfer matching one unexpired invoice.
+
+    Unsolicited, early, late and mismatched payments are logged for manual review,
+    never automatically posted to the customer's balance.
+    """
     if transfer.get('to')!=address or transfer.get('type')!='Transfer':return False
     if transfer.get('confirmed') is False or transfer.get('contractRet') not in (None,'SUCCESS'):return False
     token=transfer.get('token_info') or {}
     if token.get('address')!=USDT_CONTRACT or str(token.get('decimals'))!='6':return False
     txid=transfer.get('transaction_id')
     if not isinstance(txid,str) or len(txid)!=64 or any(x not in '0123456789abcdefABCDEF' for x in txid):return False
-    try:
-        micro=int(transfer.get('value','0'))
-        ts=int(transfer.get('block_timestamp',0))
+    try:micro=int(transfer.get('value','0'));ts=int(transfer.get('block_timestamp',0))
     except (TypeError,ValueError):return False
-    if ts<assigned_after or micro<=0 or rate<=0:return False
-    # Different transfers within same tx cannot be safely differentiated by this endpoint.
-    # One deposit per txid is accepted; ambiguous additional events must be reconciled.
-    tenths=int((Decimal(micro)*Decimal(rate)*10/Decimal(1_000_000)).to_integral_value(rounding=ROUND_DOWN))
-    if tenths<=0:return False
+    if ts<assigned_after or micro<=0:return False
     with db.transaction() as c:
         if c.execute('SELECT 1 FROM deposits WHERE txid=?',(txid,)).fetchone():return False
-        c.execute('INSERT INTO deposits(user_id,txid,event_key,address,usdt_micro,krw_tenths,rate_krw,confirmed_at) VALUES(?,?,?,?,?,?,?,?)',(user_id,txid,txid,address,micro,tenths,rate,db.now()))
-        c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',(user_id,'usdt_deposit',tenths,f'TRC20 USDT confirmed {micro}/1000000 at {rate} KRW','chain','trx:'+txid,db.now()))
-        c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(tenths,user_id))
-        db.audit(c,'chain','usdt_deposit',detail=f'user={user_id},txid={txid},micro={micro},rate={rate}')
-    return True
+        if c.execute('SELECT 1 FROM unmatched_deposits WHERE txid=?',(txid,)).fetchone():return False
+        invoice=c.execute("""SELECT * FROM topup_requests WHERE user_id=? AND address=? AND status='pending'
+          AND expires_at_ms>=? ORDER BY created_at LIMIT 1""",(user_id,address,ts)).fetchone()
+        # Prevent matching transfers made before invoice issuance. ISO8601 UTC creation timestamp.
+        from datetime import datetime,timezone
+        created_ms=int(datetime.fromisoformat(invoice['created_at']).timestamp()*1000) if invoice else 0
+        if invoice and micro==invoice['usdt_milli']*1000 and created_ms<=ts<=invoice['expires_at_ms']:
+            c.execute('INSERT INTO deposits(user_id,txid,event_key,address,usdt_micro,krw_tenths,rate_krw,confirmed_at) VALUES(?,?,?,?,?,?,?,?)',(user_id,txid,txid,address,micro,invoice['requested_tenths'],invoice['rate_krw'],db.now()))
+            c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',(user_id,'usdt_deposit',invoice['requested_tenths'],f'TRC20 invoice {invoice["id"]} exact match', 'chain','trx:'+txid,db.now()))
+            c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(invoice['requested_tenths'],user_id))
+            c.execute("UPDATE topup_requests SET status='completed',txid=?,completed_at=? WHERE id=?",(txid,db.now(),invoice['id']))
+            db.audit(c,'chain','usdt_invoice_paid',detail=f'user={user_id},invoice={invoice["id"]},txid={txid}')
+            return True
+        reason='no_matching_active_invoice_or_amount_or_timestamp'
+        c.execute('INSERT OR IGNORE INTO unmatched_deposits(txid,user_id,address,usdt_micro,reason,seen_at) VALUES(?,?,?,?,?,?)',(txid,user_id,address,micro,reason,db.now()))
+        db.audit(c,'chain','unmatched_usdt_received',detail=f'user={user_id},txid={txid},micro={micro}')
+    return False
 
 async def scan_once():
     if not config.TRONGRID_KEY:return 0
-    rate=sheet_rate.available_rate()
-    if rate <= 0:return 0  # no fresh Google rate, no automatic credit
+    # Invoices lock their exchange rates at creation; scanning must run even if current rate is stale.
     with db.connect() as c:
         addresses=[dict(x) for x in c.execute('SELECT * FROM deposit_addresses WHERE active=1')]
     count=0
@@ -115,10 +164,7 @@ async def scan_once():
             if not exhausted:
                 log.error('USDT pagination incomplete at %s; skipped',row['address']);continue
             for transfer in collected:
-                # Check again in case the rate expired during a long scan.
-                current=sheet_rate.available_rate()
-                if current <= 0: return count
-                if record(transfer,row['address'],row['user_id'],row['scan_after_ms'],current):count+=1
+                if record(transfer,row['address'],row['user_id'],row['scan_after_ms']):count+=1
     return count
 
 async def run(stop):

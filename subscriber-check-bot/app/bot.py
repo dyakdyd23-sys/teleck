@@ -1,4 +1,4 @@
-import io,logging
+import io,logging,html
 from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,InputFile
 from telegram.ext import Application,CommandHandler,MessageHandler,CallbackQueryHandler,filters,ContextTypes
 from . import config,db,service,deposits,sheet_rate
@@ -71,20 +71,35 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
             deposits.auto_assign(uid)
             with db.connect() as c:
                 row=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()
-                address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=? AND active=1',(uid,)).fetchone()
-            addr=address['address'] if address else None
             rate=sheet_rate.available_rate()
-            ready=bool(config.TRONGRID_KEY and addr and rate)
-            message=('💳 <b>USDT · TRC-20 자동충전</b>\n━━━━━━━━━━━━━━━━━━━━\n'
-                     f'💰 보유 잔액  <b>{db.money(row[0] if row else 0)}</b>\n'
-                     f'💵 Google USD/KRW 환산: <b>{rate:,}원 / USDT</b>\n\n'
-                     + ('📥 <b>회원 전용 입금주소</b>\n<code>'+addr+'</code>\n\n' if ready else '⚠️ <b>충전 준비 중</b> · 주소 또는 구글 환율 확인 필요\n\n')
-                     + '✅ 확정된 USDT(TRC-20) 입금만 자동 반영\n'
-                     + '🔢 수량은 소수점 셋째 자리까지 표시\n'
-                     + '⛔ <b>TRX 입금은 충전되지 않습니다.</b>\n'
-                     + '⛔ 다른 네트워크 코인을 보내지 마세요.\n'
-                     + '입금 반영 후 /start 로 잔액을 확인하세요.')
-            return await q.message.reply_text(message,parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 충전 문의',url='https://t.me/teleck777')]]))
+            current=deposits.active_topup(uid)
+            msg=('💳 <b>USDT · TRC-20 충전 신청</b>\n━━━━━━━━━━━━━━━━━━━━\n'
+                f'💰 보유 잔액: <b>{db.money(row[0] if row else 0)}</b>\n'
+                + (f'📈 적용 환율: <b>{rate:,}원/USDT</b> (Google USD/KRW 기준)\n\n' if rate else '⚠️ 환율 갱신 대기 중\n\n'))
+            if current:
+                msg+=('⏳ <b>진행 중인 충전 신청</b>\n'
+                      f'신청 금액: <b>{db.money(current["requested_tenths"])}</b>\n'
+                      f'송금 수량: <b>{current["usdt_milli"]/1000:.3f} USDT</b>\n'
+                      f'입금주소: <code>{html.escape(current["address"])}</code>\n'
+                      f'신청번호: <code>{current["id"][:12]}</code>\n\n'
+                      '⚠️ 정확히 지정된 USDT 수량만 입금해 주세요.\n'
+                      '만료·오입금은 자동 적립되지 않으며 관리자 대조가 필요합니다.')
+                controls=[[InlineKeyboardButton('❌ 신청 취소',callback_data='topup_cancel')], [InlineKeyboardButton('💬 충전 문의',url='https://t.me/teleck777')]]
+            else:
+                msg+=('충전할 <b>원화 금액</b>을 입력하면 필요한 USDT 수량을 계산해 드립니다.\n'
+                      '신청 가능: 1,000원 ~ 10,000,000원 (0.1원 단위)\n'
+                      '⛔ TRX 입금은 지원하지 않습니다.\n'
+                      '⏱ 송금 안내 후 30분 이내 정확히 입금해 주세요.')
+                controls=[[InlineKeyboardButton('➕ 충전 금액 입력',callback_data='topup_amount')], [InlineKeyboardButton('💬 충전 문의',url='https://t.me/teleck777')]]
+            return await q.message.reply_text(msg,parse_mode='HTML',reply_markup=InlineKeyboardMarkup(controls))
+        if data=='topup_amount':
+            if deposits.active_topup(uid):return await q.message.reply_text('진행 중인 신청이 있습니다. 먼저 완료하거나 취소해 주세요.')
+            context.user_data['awaiting_topup_amount']=True
+            return await q.message.reply_text('💰 충전할 원화 금액을 입력해 주세요.\n예: <code>10000</code> 또는 <code>15000.5</code>\n\n⛔ 아직 코인을 보내지 마세요.',parse_mode='HTML')
+        if data=='topup_cancel':
+            deposits.cancel_topup(uid)
+            context.user_data.pop('awaiting_topup_amount',None)
+            return await q.message.reply_text('신청이 취소되었습니다. 이미 송금한 금액은 자동 취소·환불되지 않습니다. 송금했다면 고객센터에 문의해 주세요.')
         if data=='jobs':
             jobs=service.list_jobs(uid)
             if not jobs:return await q.message.reply_text('검수 내역이 없습니다.')
@@ -108,10 +123,34 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
             return await q.message.reply_document(InputFile(io.BytesIO(content),filename=f'check_{jid[:8]}_{days}.{fmt}'))
     except Exception as e:await q.message.reply_text(str(e))
 
+async def topup_amount_message(update:Update,context:ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get('awaiting_topup_amount'):return
+    context.user_data.pop('awaiting_topup_amount',None)
+    uid=update.effective_user.id
+    try:
+        rate=sheet_rate.available_rate()
+        invoice=deposits.create_topup_request(uid,update.effective_message.text.strip().replace(',',''),rate)
+    except ValueError as exc:
+        return await update.message.reply_text(f'⚠️ {exc}\n충전 메뉴에서 다시 신청해 주세요.')
+    await update.message.reply_text(
+        '<b>✅ USDT 충전 신청서</b>\n━━━━━━━━━━━━━━━━━━━━\n'
+        f'💰 충전 금액: <b>{db.money(invoice["requested_tenths"])}</b>\n'
+        f'📈 적용 환율: {invoice["rate"]:,}원/USDT\n'
+        f'🪙 보내야 할 수량: <b>{invoice["usdt_milli"]/1000:.3f} USDT</b>\n\n'
+        '📥 <b>USDT TRC-20 전용 입금주소</b>\n'
+        f'<code>{html.escape(invoice["address"])}</code>\n\n'
+        f'🧾 신청번호: <code>{invoice["id"][:12]}</code>\n'
+        '⏱ 유효시간: 신청 후 30분\n'
+        '⚠️ 수량이 다르거나 늦게 들어온 송금은 자동 충전되지 않고 관리자 확인이 필요합니다.\n'
+        '⛔ TRX 및 타 네트워크 입금 금지\n'
+        '✅ 블록체인 확정 후 자동 적립됩니다.',parse_mode='HTML',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 입금 문의',url='https://t.me/teleck777')]]))
+
 def build():
     app=Application.builder().token(config.TOKEN).build()
     app.add_handler(CommandHandler('start',start));app.add_handler(CommandHandler('menu',start))
     app.add_handler(MessageHandler(filters.Document.ALL,doc))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,topup_amount_message))
     app.add_handler(CallbackQueryHandler(buttons))
     return app
 
