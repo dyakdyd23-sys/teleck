@@ -26,5 +26,6 @@ TRONGRID_URL = os.getenv('TRONGRID_URL','https://api.trongrid.io').rstrip('/')
 DEPOSIT_POLL_SECONDS = max(60,int(os.getenv('DEPOSIT_POLL_SECONDS','120')))
 BASE_URL=os.getenv('WEB_BASE_URL','').rstrip('/')
 
-# Optional comma/newline separated operator-controlled deposit addresses. NEVER private keys.
-TRON_DEPOSIT_ADDRESSES = [a.strip() for a in os.getenv('TRON_DEPOSIT_ADDRESSES','').replace('\n',',').split(',') if a.strip()]
+
+# Published CSV URL of a Google Sheet with A1 = GOOGLEFINANCE("CURRENCY:USDKRW").
+GOOGLE_SHEET_CSV_URL = os.getenv("GOOGLE_SHEET_CSV_URL", "").strip()

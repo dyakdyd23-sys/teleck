@@ -1,5 +1,5 @@
 """Configuration-driven provider adapter; no invented endpoint or response keys."""
-import json, httpx
+import json, csv, io, httpx
 from urllib.parse import urlsplit
 from . import config
 
@@ -8,6 +8,7 @@ class Contract:
     @classmethod
     def load(cls):
         if not config.API_URL.startswith('https://') or not config.API_KEY:raise ValueError('실제 HTTPS API 주소 및 인증키가 필요합니다.')
+        if __import__('os').getenv('TG_API_CONTRACT_VERIFIED') != '1':raise ValueError('실제 응답 검증 전 요청·결제 차단: TG_API_CONTRACT_VERIFIED 미설정')
         host=urlsplit(config.API_URL)
         if not host.hostname or host.username or host.password:raise ValueError('API URL 오류')
         d=json.loads(config.CONTRACT.read_text(encoding='utf-8'))
@@ -40,10 +41,17 @@ class Contract:
             path=path.replace('{task_id}',quote(str(task_id),safe=''))
         headers={self.d['auth_header']:self.d.get('auth_prefix','')+config.API_KEY}
         kw={}
-        if phones is not None:kw['json']={spec['phones_field']:phones}
+        if task_id and spec.get('task_id_query'):
+            kw['params']={spec['task_id_query']:str(task_id)}
+        if phones is not None:
+            body={spec['phones_field']:phones}
+            if spec.get('country_field'):body[spec['country_field']]=spec.get('country_value','KR')
+            kw['json']=body
         async with httpx.AsyncClient(base_url=config.API_URL,timeout=45,follow_redirects=False) as client:
             r=await client.request(spec['method'].upper(),path,headers=headers,**kw)
             r.raise_for_status()
+            if spec.get('response_format')=='csv':
+                return {'rows':list(csv.DictReader(io.StringIO(r.content.decode('utf-8-sig'))))}
             return r.json()
     async def create(self,phones):
         result=await self.call('create',phones=phones)

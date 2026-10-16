@@ -140,3 +140,24 @@ CUSTOMER_SUPPORT=@teleck777
 - TronGrid API로 `only_confirmed=true` 입금 기록을 120초 간격으로 조회합니다. 같은 txid는 재적립하지 않으며 사용자 원장에 기록됩니다. 원본 코인 수량은 6자리, 표시 수량은 3자리입니다.
 - **Railway 영구 볼륨은 필수입니다.** `/data` 위치에 Volume을 마운트하고 서비스를 **단일 인스턴스**로 실행하세요. 볼륨 미설정이면 배포 시 원장이 유실될 수 있습니다.
 - 실입금을 받기 전에 테스트넷이 아닌 실제 TRON 메인넷에서 *본인이 소유한 고유 주소*로 TRX와 USDT 소액을 각각 전송해 정확한 입금 및 중복 부재를 확인하세요. 이는 실운영 검증이 끝났다는 의미가 아닙니다.
+
+
+## Google Sheets 환율 · USDT(TRC-20) 전용 충전
+
+1. 새 구글 스프레드시트의 **A1**에 `=GOOGLEFINANCE("CURRENCY:USDKRW")` 입력 (구글 USD/KRW 기준, USDT 실거래 시세와 다를 수 있음).
+2. 시트 **파일 → 공유 → 웹에 게시**에서 현재 시트를 CSV로 게시. 그 CSV 링크를 `GOOGLE_SHEET_CSV_URL` 환경변수에 입력. **외부에서 공개되는 시트에 개인정보를 넣지 마세요.**
+3. Railway에 `TRONGRID_API_KEY`, 실제 운영 통제하의 고유 주소 목록 `TRON_DEPOSIT_ADDRESSES`, `GOOGLE_SHEET_CSV_URL` 설정.
+4. Google 환율은 2분마다 갱신되며 10분 이상 갱신되지 않으면 신규 입금 적립을 보류합니다. 시트가 숫자 형식으로 A1 한 칸만 반환하는지 확인하세요.
+5. TRX 입금은 자동 지급되지 않으며, 원화 잔액 자동충전은 **USDT(TRC-20)**만 지원합니다. 주소 배정 후 기존 입금은 자동 적립하지 않습니다. 환율은 확인된 시점의 시트 값으로 고정 기록됩니다.
+6. 실제 입금 전에 메인넷 소액 검증 및 Volume 영구 보관, 관리자 접근 통제 확인이 필요합니다.
+
+## 2026-10-16 통합 업데이트 — 충전주소 일원화 / 기존 검수 API 연동 후보
+
+- 주소 목록은 관리자 `/admin`의 **주소 풀에 추가** 양식에서 등록한다. `TRON_DEPOSIT_ADDRESSES` 환경변수는 **폐기**되었다.
+- 회원이 충전 화면에 접속하면 사용되지 않은 등록 주소를 트랜잭션 내에서 배정한다. 주소는 재활용하지 않으며 기존 배정 내역은 유지된다. 등록하는 주소는 운영자가 통제하는 수신주소여야 한다.
+- USDT TRC-20 입금만 자동 적립한다. TRX 입금은 적립하지 않는다. 환율은 `GOOGLE_SHEET_CSV_URL`의 USD/KRW 값을 사용한다. 실제 USDT 현물 시장 가격과 다를 수 있다.
+- 이전 연동 기록에서 회수한 API 경로 `POST /addTask`, `GET /checkTask?id=...`, `GET /exportPhone?id=...`, 헤더 `token`, 국가 필드 `conuntry` 후보를 `api_contract.legacy-template.json`에 추가했다.
+- **중요: 작업 생성 body의 `phone_numbers`, 생성 응답의 `id`, 상태 응답의 `status`, 결과 CSV 열 이름과 상태 값 매핑은 공식 명세/실응답으로 검증되지 않았다.** 제공업체와 소량 테스트로 확인 후 명세 파일을 고쳐야 한다. `TG_API_CONTRACT_VERIFIED=0` (기본)에서는 검수 신청 및 비용 차감이 차단된다. 검증하고 나서만 `=1`로 활성화한다. 이 패키지는 외부 API의 정상 동작을 보증하지 않는다.
+- 환경변수: `TELEGRAM_CHECK_API_URL=https://api.ftm111.pw/api/tg`, `TELEGRAM_CHECK_API_KEY=<비밀>`, `API_CONTRACT_FILE=./api_contract.legacy-template.json`, `TG_API_CONTRACT_VERIFIED=0`, `TRONGRID_API_KEY=<비밀>`, `GOOGLE_SHEET_CSV_URL=<공개 CSV URL>`, 기존 봇/관리자/DB 변수.
+- 새 테이블 `deposit_address_pool`은 기존 SQLite DB에 `CREATE TABLE IF NOT EXISTS`로 추가된다. 기존 Volume의 DB를 절대 삭제하거나 교체하지 말 것. 운영 전 백업 필수.
+- 자동 테스트는 제공업체 실제 서버/실입금 없이 로컬 단위 테스트로만 수행됨. 통합 검증이 끝나기 전 실자산 충전 및 유료 검수 운영 금지.

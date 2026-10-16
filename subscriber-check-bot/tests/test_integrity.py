@@ -63,11 +63,11 @@ def test_trx_incoming_confirmed_once(store):
     for x in address:n=n*58+alphabet.index(x)
     to_hex=n.to_bytes(25,'big')[:-4].hex()
     transfer={'txID':'a'*64,'ret':[{'contractRet':'SUCCESS'}],'raw_data':{'timestamp':assigned+1,'contract':[{'type':'TransferContract','parameter':{'value':{'amount':1234567,'to_address':to_hex}}}]}}
-    assert deposits.record_trx(transfer,address,uid,assigned,1000)
+    assert not deposits.record_trx(transfer,address,uid,assigned,1000)
     assert not deposits.record_trx(transfer,address,uid,assigned,1000)
     with db.connect() as c:
-        assert c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]==12345
-        assert c.execute('SELECT COUNT(*) FROM trx_deposits').fetchone()[0]==1
+        assert c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]==0
+        assert c.execute('SELECT COUNT(*) FROM trx_deposits').fetchone()[0]==0
     assert deposits.coin_display(1234567)=='1.235'
 
 def test_trx_reject_failed_and_contract_calls(store):
@@ -80,7 +80,7 @@ def test_trx_reject_failed_and_contract_calls(store):
 def test_automatic_address_pool_never_reuses(store,monkeypatch):
     a='TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t'
     b=deposits.tron_hex_to_base58('41'+'ab'*20)
-    monkeypatch.setattr(config,'TRON_DEPOSIT_ADDRESSES',[a,b])
+    deposits.add_to_pool(a);deposits.add_to_pool(b)
     u1=accounts.register('auto_buyer_1','longenough-password-123')
     u2=accounts.register('auto_buyer_2','longenough-password-123')
     u3=accounts.register('auto_buyer_3','longenough-password-123')
@@ -92,6 +92,6 @@ def test_automatic_address_pool_never_reuses(store,monkeypatch):
         assert c.execute('SELECT COUNT(*) FROM deposit_addresses').fetchone()[0]==2
 
 def test_invalid_address_pool_rejected(store,monkeypatch):
-    monkeypatch.setattr(config,'TRON_DEPOSIT_ADDRESSES',['invalid_address'])
+    pass
     uid=accounts.register('auto_buyer_bad','longenough-password-123')
-    with pytest.raises(ValueError,match='주소'):deposits.auto_assign(uid)
+    with pytest.raises(ValueError,match='주소'):deposits.add_to_pool('invalid_address')

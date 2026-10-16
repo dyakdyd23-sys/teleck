@@ -1,7 +1,7 @@
 import io,logging
 from telegram import Update,InlineKeyboardButton,InlineKeyboardMarkup,InputFile
 from telegram.ext import Application,CommandHandler,MessageHandler,CallbackQueryHandler,filters,ContextTypes
-from . import config,db,service,deposits
+from . import config,db,service,deposits,sheet_rate
 from .export import export
 log=logging.getLogger(__name__)
 
@@ -72,18 +72,17 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
             with db.connect() as c:
                 row=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()
                 address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=? AND active=1',(uid,)).fetchone()
-                rates={asset:db.setting(c,key) for asset,key in [('TRX','trx_krw_rate'),('USDT','usdt_krw_rate')]}
             addr=address['address'] if address else None
-            ready=bool(config.TRONGRID_KEY and addr)
-            message=('💳 <b>내 지갑 · 자동충전</b>\n━━━━━━━━━━━━━━━━━━━━\n'
-                     f'💰 보유 잔액  <b>{db.money(row[0] if row else 0)}</b>\n\n'
-                     '🟣 <b>TRX · TRON 네트워크</b>\n'
-                     '🟢 <b>USDT · TRC-20 네트워크</b>\n'
-                     f'시스템 환산 단가\nTRX 1개: {rates["TRX"]:,}원 / USDT 1개: {rates["USDT"]:,}원\n\n'
-                     + ('📥 <b>공통 입금주소</b>\n<code>'+addr+'</code>\n\n' if ready and all(rates.values()) else '⚠️ <b>충전 준비 중</b> — 관리자에게 문의해 주세요.\n\n')
-                     + '✅ 블록체인 확정 입금만 자동 반영\n'
+            rate=sheet_rate.available_rate()
+            ready=bool(config.TRONGRID_KEY and addr and rate)
+            message=('💳 <b>USDT · TRC-20 자동충전</b>\n━━━━━━━━━━━━━━━━━━━━\n'
+                     f'💰 보유 잔액  <b>{db.money(row[0] if row else 0)}</b>\n'
+                     f'💵 Google USD/KRW 환산: <b>{rate:,}원 / USDT</b>\n\n'
+                     + ('📥 <b>회원 전용 입금주소</b>\n<code>'+addr+'</code>\n\n' if ready else '⚠️ <b>충전 준비 중</b> · 주소 또는 구글 환율 확인 필요\n\n')
+                     + '✅ 확정된 USDT(TRC-20) 입금만 자동 반영\n'
                      + '🔢 수량은 소수점 셋째 자리까지 표시\n'
-                     + '⛔ TRON 외 다른 네트워크로 전송하지 마세요.\n'
+                     + '⛔ <b>TRX 입금은 충전되지 않습니다.</b>\n'
+                     + '⛔ 다른 네트워크 코인을 보내지 마세요.\n'
                      + '입금 반영 후 /start 로 잔액을 확인하세요.')
             return await q.message.reply_text(message,parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 충전 문의',url='https://t.me/teleck777')]]))
         if data=='jobs':

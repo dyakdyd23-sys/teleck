@@ -3,11 +3,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from . import config,db,service
+from . import config,db,service,sheet_rate
 from .bot import run as bot_run
 from .worker import run as worker_run
 from .deposits import run as deposit_run
 from .notify import run as notify_run
+from .sheet_rate import run as rate_run
 
 log=logging.getLogger(__name__)
 security=HTTPBasic(auto_error=False)
@@ -16,7 +17,7 @@ stop=asyncio.Event()
 @asynccontextmanager
 async def lifespan(app):
     db.init();stop.clear()
-    tasks=[asyncio.create_task(worker_run(stop)),asyncio.create_task(bot_run(stop)),asyncio.create_task(deposit_run(stop)),asyncio.create_task(notify_run(stop))]
+    tasks=[asyncio.create_task(worker_run(stop)),asyncio.create_task(bot_run(stop)),asyncio.create_task(rate_run(stop)),asyncio.create_task(deposit_run(stop)),asyncio.create_task(notify_run(stop))]
     yield
     stop.set()
     await asyncio.gather(*tasks,return_exceptions=True)
@@ -80,7 +81,7 @@ def dashboard(user=Depends(admin)):
         body+=f'<label>{label} <input type="number" min="1" name="{key}" value="{settings[key]}" required></label>'
     body+='<button>설정 저장</button></form></main>'
     body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_tenths" placeholder="0.1원 단위 충전액" min="1" required><input name="reference" placeholder="고유 거래 참조값" required><button>충전</button></form></main>'
-    body+='<main><h2>TRON 자동충전 · TRX / USDT(TRC-20)</h2><p>회원별로 실제 통제 중인 고유 입금주소를 배정하세요. 설정 환율 0원인 경우 자동 지급은 중지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID" required><input name="address" placeholder="전용 TRON 주소" required><button>주소 등록</button></form><form method="post" action="/admin/usdt-rate"><input type="number" min="0" name="rate" placeholder="1 USDT 환산 원화 금액" required><button>USDT 환율 설정</button></form><form method="post" action="/admin/trx-rate"><input type="number" min="0" name="rate" placeholder="1 TRX 환산 원화 금액" required><button>TRX 환율 설정</button></form></main>'
+    body+='<main><h2>USDT · TRC-20 자동충전</h2><p>환율은 Google Sheets A1(USD/KRW)에서 자동 조회합니다. 충전은 USDT(TRC-20)만 지원합니다. TRX 입금은 잔액에 반영되지 않습니다.</p><p>환율 상태: '+('정상 · '+str(sheet_rate.available_rate())+'원/USDT' if sheet_rate.available_rate() else '미설정 또는 갱신 실패 · 충전 중단')+'</p><form method="post" action="/admin/deposit-pool"><input name="address" placeholder="새 TRON 수신 주소 (회원 자동 배정용)" required><button>주소 풀에 추가</button></form><p>주소는 관리자에서 일괄 관리하며 회원이 충전 메뉴를 열 때 빈 주소를 자동 배정합니다. 기존 회원 주소는 유지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID (수동 배정)" required><input name="address" placeholder="전용 TRON 주소" required><button>지정 회원 배정</button></form></main>'
     body+='<main><h2>작업 목록</h2><table><tr><th>작업번호</th><th>사용자</th><th>상태</th><th>검수</th><th>완료</th><th>청구</th><th>환불</th></tr>'
     for j in jobs:body+=f'<tr><td><a href="/admin/job/{esc(j["id"])}">{esc(j["id"][:12])}</a></td><td>{j["user_id"]}</td><td>{esc(j["status"])}</td><td>{j["valid_count"]:,}</td><td>{j["success_count"]:,}</td><td>{db.money(j["charged_tenths"])}</td><td>{db.money(j["refunded_tenths"])}</td></tr>'
     body+='</table></main><main><h2>사용자별 잔액</h2><table><tr><th>Telegram ID</th><th>잔액</th></tr>'
@@ -149,12 +150,11 @@ def home(request:Request):
         balance=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]
         row=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
         rate=db.setting(c,'usdt_krw_rate')
-        trx_rate=db.setting(c,'trx_krw_rate')
         jobs=c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(uid,)).fetchall()
         deposits_rows=c.execute('SELECT txid,usdt_micro,krw_tenths FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
-        trx_rows=c.execute('SELECT txid,amount_sun,krw_tenths FROM trx_deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
     address=esc(row['address']) if row else '관리자 주소 배정 대기 중 · 입금하지 마세요'
-    body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p>TRX / USDT(TRC-20) 자동충전: TRON 체인만 지원 · 공통 입금주소: <strong>{address}</strong></p><p>자동 충전 적용 환율: {rate:,}원/USDT · {trx_rate:,}원/TRX (입금 확인 시점의 설정 환율, 0이면 자동 반영 중지)</p><p>다른 네트워크 송금 금지. 체인 확인 후 원화 잔액으로 반영됩니다.</p></main>'
+    active_rate=sheet_rate.available_rate()
+    body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p><b>USDT · TRC-20 전용 자동충전</b></p><p>전용 입금주소: <strong>{address if active_rate and config.TRONGRID_KEY else "준비 중 · 입금하지 마세요"}</strong></p><p>구글 스프레드시트 USD/KRW 기준 환산: {active_rate:,}원/USDT</p><p><b>TRX는 충전 지원하지 않습니다. TRON 체인의 USDT(TRC-20)만 전송하세요.</b></p></main>'
     body+='<main><h2>검수 파일</h2><form method="post" action="/customer/preview" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required><button>파일 분석</button></form></main>'
     body+='<main><h2>검수 작업</h2><table><tr><th>작업</th><th>상태</th><th>처리</th><th>결과</th></tr>'
     for j in jobs:
@@ -162,8 +162,6 @@ def home(request:Request):
         body+=f'<tr><td>{esc(j["id"][:12])}</td><td>{esc(j["status"])}</td><td>{j["success_count"]:,}/{j["valid_count"]:,}</td><td>{downloads}</td></tr>'
     body+='</table></main><main><h2>자동충전 기록</h2><table><tr><th>TXID</th><th>USDT</th><th>반영 금액</th></tr>'
     for d in deposits_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["usdt_micro"]/1000000:.3f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
-    body+='</table></main><main><h2>TRX 자동충전 기록</h2><table><tr><th>TXID</th><th>TRX</th><th>반영 금액</th></tr>'
-    for d in trx_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["amount_sun"]/1000000:.3f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
     body+='</table></main><form method="post" action="/logout"><button>로그아웃</button></form>'
     return wrap(body)
 
@@ -214,6 +212,13 @@ def customer_download(jid:str,fmt:str='xlsx',days:str='all',uid:int=Depends(cust
     with db.transaction() as c:c.execute('UPDATE result_archives SET delivered_to_user_at=COALESCE(delivered_to_user_at,?) WHERE job_id=?',(db.now(),jid))
     return Response(content,media_type=mime,headers={'Content-Disposition':f'attachment; filename="check_{jid[:12]}.{fmt}"','Cache-Control':'no-store'})
 
+@app.post('/admin/deposit-pool')
+def admin_deposit_pool(request:Request,address:str=Form(...),user=Depends(admin)):
+    guard_origin(request)
+    try:deposits.add_to_pool(address.strip(),actor=user)
+    except Exception as e:raise HTTPException(400,str(e))
+    return RedirectResponse('/admin',303)
+
 @app.post('/admin/deposit-address')
 def admin_deposit_address(request:Request,user_id:int=Form(...),address:str=Form(...),user=Depends(admin)):
     guard_origin(request)
@@ -223,6 +228,7 @@ def admin_deposit_address(request:Request,user_id:int=Form(...),address:str=Form
 @app.post('/admin/usdt-rate')
 def admin_usdt_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
     guard_origin(request)
+    raise HTTPException(403,'Google Sheets 자동 환율만 지원합니다.')
     if rate<0 or rate>100000:raise HTTPException(400,'환율 범위 오류')
     with db.transaction() as c:
         c.execute("UPDATE settings SET value=? WHERE key='usdt_krw_rate'",(str(rate),))
@@ -231,6 +237,7 @@ def admin_usdt_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
 @app.post('/admin/trx-rate')
 def admin_trx_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
     guard_origin(request)
+    raise HTTPException(403,'TRX 자동충전은 지원하지 않습니다.')
     if not 0<=rate<=100000:raise HTTPException(400,'환율 범위 오류')
     with db.transaction() as c:
         c.execute("UPDATE settings SET value=? WHERE key='trx_krw_rate'",(str(rate),))
@@ -312,7 +319,7 @@ def admin_member(uid:int,user=Depends(admin)):
     for x in ledger:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["kind"])}</td><td>{db.money(x["amount_tenths"]) if x["amount_tenths"]>=0 else "-"+db.money(-x["amount_tenths"])}</td><td>{esc(x["reason"])}</td><td>{esc(x["actor"])}</td><td>{esc(x["idempotency_key"])}</td></tr>'
     body+='</table></main><main><h2>USDT 충전 이력</h2><table><tr><th>일시</th><th>TXID</th><th>USDT</th><th>지급 원화</th></tr>'
     for x in deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["usdt_micro"]/1000000:.3f}</td><td>{db.money(x["krw_tenths"])}</td></tr>'
-    body+='</table></main><main><h2>TRX 충전 이력</h2><table><tr><th>일시</th><th>TXID</th><th>TRX</th><th>지급 원화</th></tr>'
+    body+='</table></main><main><h2>과거 TRX 충전 이력 (현재 신규 충전 중단)</h2><table><tr><th>일시</th><th>TXID</th><th>TRX</th><th>지급 원화</th></tr>'
     for x in trx_deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["amount_sun"]/1000000:.3f}</td><td>{db.money(x["krw_tenths"])}</td></tr>' 
     body+='</table></main><main><h2>회원 활동 감사 로그</h2><table><tr><th>시각</th><th>활동</th><th>작업</th><th>내용</th></tr>'
     for x in events:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["action"])}</td><td>{esc(x["job_id"] or "-")}</td><td>{esc(x["detail"])}</td></tr>'
