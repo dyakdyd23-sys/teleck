@@ -54,7 +54,7 @@ def guard_origin(request:Request):
 def esc(x):return html.escape(str(x or ''))
 def wrap(body):
     return HTMLResponse('''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>가입자 검수봇 관리자</title><style>
-    :root{color-scheme:dark}body{font-family:system-ui,Arial;background:#0b1220;color:#eaf1ff;max-width:1180px;margin:auto;padding:30px}h1{font-size:24px}h2{font-size:18px;margin-top:32px}p{color:#a5b5d0}main{background:#142036;padding:22px;border-radius:16px;margin:20px 0;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:11px;text-align:left;border-bottom:1px solid #344057;white-space:nowrap}th{color:#91a9ca}input,button{background:#202d45;color:white;border:1px solid #53637b;border-radius:8px;padding:10px;margin:4px}button{background:#3873e0;border:0;cursor:pointer}a{color:#7eb0ff}small{color:#b8c9e4}</style></head><body><h1>가입자 검수봇 <small>관리자</small></h1>'''+body+'</body></html>')
+    :root{color-scheme:dark}body{font-family:system-ui,Arial;background:#0b1220;color:#eaf1ff;max-width:1180px;margin:auto;padding:30px}h1{font-size:24px}h2{font-size:18px;margin-top:32px}p{color:#a5b5d0}main{background:#142036;padding:24px;border:1px solid #263c5c;border-radius:18px;margin:20px 0;overflow-x:auto;box-shadow:0 12px 34px #050c1833}table{width:100%;border-collapse:collapse;font-size:13px}td,th{padding:11px;text-align:left;border-bottom:1px solid #344057;white-space:nowrap}th{color:#91a9ca}input,button{background:#202d45;color:white;border:1px solid #53637b;border-radius:8px;padding:10px;margin:4px}button{background:#3578eb;border:0;cursor:pointer;font-weight:700}button:hover{background:#5591ff}a:hover{text-decoration:none}input:focus{outline:2px solid #5996ff} .stat{display:inline-block;background:#202f48;border-radius:12px;padding:14px;margin:6px} .tag{font-size:12px;color:#9ac2ff}a{color:#7eb0ff}small{color:#b8c9e4}</style></head><body><h1>가입자 검수봇 <small>관리자</small></h1>'''+body+'</body></html>')
 
 @app.get('/health')
 def health():return {'service':'subscriber-check-bot','status':'running','provider_configured':service.provider_ready()}
@@ -77,8 +77,8 @@ def dashboard(user=Depends(admin)):
     body+='<main><h2>작업 목록</h2><table><tr><th>작업번호</th><th>사용자</th><th>상태</th><th>검수</th><th>완료</th><th>청구</th><th>환불</th></tr>'
     for j in jobs:body+=f'<tr><td><a href="/admin/job/{esc(j["id"])}">{esc(j["id"][:12])}</a></td><td>{j["user_id"]}</td><td>{esc(j["status"])}</td><td>{j["valid_count"]:,}</td><td>{j["success_count"]:,}</td><td>{db.money(j["charged_tenths"])}</td><td>{db.money(j["refunded_tenths"])}</td></tr>'
     body+='</table></main><main><h2>사용자별 잔액</h2><table><tr><th>Telegram ID</th><th>잔액</th></tr>'
-    for u in users:body+=f'<tr><td>{u["user_id"]}</td><td>{db.money(u["balance_tenths"])}</td></tr>'
-    body+='</table></main><main><h2>외부 요청 결과 불명 · 수동 대조 필요</h2><table><tr><th>배치 ID</th><th>작업</th><th>오류</th></tr>'
+    for u in users:body+=f'<tr><td><a href="/admin/member/{u["user_id"]}">{u["user_id"]}</a></td><td>{db.money(u["balance_tenths"])}</td></tr>'
+    body+='</table><p><a href="/admin/members">회원 전체 조회 · 검색 · 정산 관리 →</a></p></main><main><h2>외부 요청 결과 불명 · 수동 대조 필요</h2><table><tr><th>배치 ID</th><th>작업</th><th>오류</th></tr>'
     for b in issues:body+=f'<tr><td>{esc(b["id"][:12])}</td><td>{esc(b["job_id"][:12])}</td><td>{esc(b["error"])}</td></tr>'
     body+='</table><p>제공업체에서 외부 작업 ID 확인 시 연결하여 상태 조회를 재개할 수 있습니다. 작업 생성이 실패한 것이 확인된 경우에만 실패로 확정하세요. 실패 확정 시 미처리 건은 자동 환불 대상입니다.</p>'
     body+='<form method="post" action="/admin/reconcile"><input name="batch_id" placeholder="전체 배치 ID" required><input name="api_task_id" placeholder="확인된 외부 작업 ID (재개 시 필수)"><select name="resolution"><option value="resume">외부 작업 ID 연결·재개</option><option value="fail">외부 작업 없음 확인·실패 확정</option></select><input name="reason" placeholder="대조 사유/확인 근거" minlength="8" required><button>대조 기록</button></form></main><main><h2>감사 로그</h2><table><tr><th>시각</th><th>실행자</th><th>작업</th><th>메모</th></tr>'
@@ -145,10 +145,10 @@ def home(request:Request):
         deposits_rows=c.execute('SELECT txid,usdt_micro,krw_tenths FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
     address=esc(row['address']) if row else '관리자 주소 배정 대기 중 · 입금하지 마세요'
     body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p>USDT 충전: TRON(TRC-20)만 지원 · 입금주소: <strong>{address}</strong></p><p>자동 충전 적용 환율: {rate:,}원/USDT (입금 확인 시점의 설정 환율, 0이면 자동 반영 중지)</p><p>다른 네트워크 송금 금지. 체인 확인 후 원화 잔액으로 반영됩니다.</p></main>'
-    body+='<main><h2>검수 파일</h2><form method="post" action="/customer/preview" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.xlsx,.xls" required><button>파일 분석</button></form></main>'
+    body+='<main><h2>검수 파일</h2><form method="post" action="/customer/preview" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required><button>파일 분석</button></form></main>'
     body+='<main><h2>검수 작업</h2><table><tr><th>작업</th><th>상태</th><th>처리</th><th>결과</th></tr>'
     for j in jobs:
-        downloads=(f'<a href="/customer/download/{j["id"]}?fmt=csv">CSV</a> · <a href="/customer/download/{j["id"]}?fmt=xlsx">Excel</a>' if j['status'] in ('completed','failed') else '-')
+        downloads=(f'<a href="/customer/download/{j["id"]}?fmt=xlsx">Excel 다운로드</a>' if j['status'] in ('completed','failed') else '-')
         body+=f'<tr><td>{esc(j["id"][:12])}</td><td>{esc(j["status"])}</td><td>{j["success_count"]:,}/{j["valid_count"]:,}</td><td>{downloads}</td></tr>'
     body+='</table></main><main><h2>자동충전 기록</h2><table><tr><th>TXID</th><th>USDT</th><th>반영 금액</th></tr>'
     for d in deposits_rows:body+=f'<tr><td>{esc(d["txid"][:18])}…</td><td>{d["usdt_micro"]/1000000:.6f}</td><td>{db.money(d["krw_tenths"])}</td></tr>'
@@ -193,7 +193,7 @@ def customer_submit(request:Request,preview_id:str=Form(...),uid:int=Depends(cus
     except Exception as e:raise HTTPException(400,str(e))
     return wrap(f'<main>작업 신청 완료: {esc(jid)} <a href="/">내 작업</a></main>')
 @app.get('/customer/download/{jid}')
-def customer_download(jid:str,fmt:str='csv',days:str='all',uid:int=Depends(customer)):
+def customer_download(jid:str,fmt:str='xlsx',days:str='all',uid:int=Depends(customer)):
     with db.connect() as c:
         j=c.execute('SELECT user_id,status FROM jobs WHERE id=?',(jid,)).fetchone()
         if not j or j['user_id']!=uid or j['status'] not in ('completed','failed'):raise HTTPException(404)
@@ -217,7 +217,7 @@ def admin_usdt_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
         db.audit(c,user,'change_usdt_rate',detail=f'rate_krw={rate}')
     return RedirectResponse('/admin',303)
 @app.get('/admin/download/{jid}')
-def admin_download(jid:str,fmt:str='csv',days:str='all',user=Depends(admin)):
+def admin_download(jid:str,fmt:str='xlsx',days:str='all',user=Depends(admin)):
     with db.connect() as c:
         j=c.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()
         if not j or j['status'] not in ('completed','failed'):raise HTTPException(404)
@@ -244,3 +244,68 @@ def admin_reconcile(request:Request,batch_id:str=Form(...),resolution:str=Form(.
             c.execute("UPDATE batches SET state='failed',error=?,updated_at=? WHERE id=?",('관리자 대조로 실패 확정',db.now(),batch_id))
         db.audit(c,user,'reconcile_'+resolution,b['job_id'],f'batch={batch_id};reason={reason[:500]}')
     return RedirectResponse('/admin',303)
+
+
+@app.get('/admin/members',response_class=HTMLResponse)
+def admin_members(q:str='',page:int=1,user=Depends(admin)):
+    page=max(1,min(page,100000));q=q.strip()[:100]
+    with db.connect() as c:
+        where="WHERE CAST(u.user_id AS TEXT) LIKE ? OR a.username LIKE ?" if q else ''
+        params=(f'%{q}%',f'%{q}%') if q else ()
+        users=c.execute(f"""SELECT u.user_id,u.balance_tenths,u.created_at,a.username,
+            (SELECT COUNT(*) FROM jobs j WHERE j.user_id=u.user_id) job_count,
+            (SELECT COUNT(*) FROM deposits d WHERE d.user_id=u.user_id) deposit_count
+            FROM users u LEFT JOIN web_accounts a ON a.user_id=u.user_id {where}
+            ORDER BY u.created_at DESC LIMIT 50 OFFSET ?""",(*params,(page-1)*50)).fetchall()
+        count=c.execute(f'SELECT COUNT(*) FROM users u LEFT JOIN web_accounts a ON a.user_id=u.user_id {where}',params).fetchone()[0]
+    body='<main><h2>회원 관리</h2><form method="get"><input name="q" placeholder="회원 ID 또는 아이디 검색" value="'+esc(q)+'"><button>검색</button></form><p>검색 결과 '+format(count,',')+'명 · 50명씩 표시</p><table><tr><th>회원 ID</th><th>아이디</th><th>잔액</th><th>검수 작업</th><th>충전 건수</th><th>가입일</th></tr>'
+    for x in users:
+        body+=f'<tr><td><a href="/admin/member/{x["user_id"]}">{x["user_id"]}</a></td><td>{esc(x["username"] or "Telegram")}</td><td>{db.money(x["balance_tenths"])}</td><td>{x["job_count"]:,}</td><td>{x["deposit_count"]:,}</td><td>{esc(x["created_at"][:10])}</td></tr>'
+    body+='</table><p>'
+    if page>1:body+=f'<a href="/admin/members?q={__import__("urllib.parse",fromlist=["quote"]).quote(q)}&page={page-1}">← 이전</a> '
+    if page*50<count:body+=f'<a href="/admin/members?q={__import__("urllib.parse",fromlist=["quote"]).quote(q)}&page={page+1}">다음 →</a>'
+    return wrap(body+'</p><a href="/admin">관리자 홈</a></main>')
+
+@app.get('/admin/member/{uid}',response_class=HTMLResponse)
+def admin_member(uid:int,user=Depends(admin)):
+    with db.connect() as c:
+        m=c.execute('SELECT u.*,a.username FROM users u LEFT JOIN web_accounts a ON a.user_id=u.user_id WHERE u.user_id=?',(uid,)).fetchone()
+        if not m:raise HTTPException(404,'회원을 찾을 수 없습니다.')
+        jobs=c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 100',(uid,)).fetchall()
+        ledger=c.execute('SELECT * FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 100',(uid,)).fetchall()
+        deposits=c.execute('SELECT * FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 50',(uid,)).fetchall()
+        events=c.execute('SELECT * FROM audit WHERE actor=? OR detail LIKE ? ORDER BY id DESC LIMIT 100',(str(uid),f'%user={uid},%')).fetchall()
+        address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
+    body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>입금 주소: {esc(address["address"] if address else "미등록")}</p></main>'
+    body+=f"""<main><h2>관리자 수동 잔액 조정</h2><p>조정 사유와 고유 참조값을 반드시 남깁니다. 차감은 보유잔액 범위 내에서만 가능합니다.</p>
+    <form method="post" action="/admin/member/{uid}/adjust"><label>유형 <select name="direction"><option value="credit">충전 (+)</option><option value="debit">차감 (-)</option></select></label>
+    <label>금액(원) <input type="number" name="amount_krw" min="1" max="1000000000" required></label>
+    <label>사유 <input name="reason" minlength="5" maxlength="300" required></label>
+    <label>고유 참조값 <input name="reference" minlength="6" maxlength="100" required></label><button>잔액 조정 기록</button></form></main>"""
+    body+='<main><h2>회원 검수 진행 로그</h2><table><tr><th>작업 ID</th><th>일시</th><th>상태</th><th>진행률</th><th>성공/실패</th><th>결제/환불</th></tr>'
+    for j in jobs:
+        progress=min(100,round(j['processed_count']*100/max(j['valid_count'],1),1))
+        body+=f'<tr><td><a href="/admin/job/{esc(j["id"])}">{esc(j["id"][:12])}</a></td><td>{esc(j["created_at"][:19])}</td><td>{esc(j["status"])}</td><td>{progress}%</td><td>{j["success_count"]:,}/{j["failed_count"]:,}</td><td>{db.money(j["charged_tenths"])} / {db.money(j["refunded_tenths"])}</td></tr>'
+    body+='</table></main><main><h2>잔액 변동 및 정산 원장</h2><table><tr><th>일시</th><th>종류</th><th>금액</th><th>사유</th><th>처리자</th><th>참조값</th></tr>'
+    for x in ledger:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["kind"])}</td><td>{db.money(x["amount_tenths"]) if x["amount_tenths"]>=0 else "-"+db.money(-x["amount_tenths"])}</td><td>{esc(x["reason"])}</td><td>{esc(x["actor"])}</td><td>{esc(x["idempotency_key"])}</td></tr>'
+    body+='</table></main><main><h2>USDT 충전 이력</h2><table><tr><th>일시</th><th>TXID</th><th>USDT</th><th>지급 원화</th></tr>'
+    for x in deposits:body+=f'<tr><td>{esc(x["confirmed_at"][:19])}</td><td>{esc(x["txid"])}</td><td>{x["usdt_micro"]/1000000:.6f}</td><td>{db.money(x["krw_tenths"])}</td></tr>'
+    body+='</table></main><main><h2>회원 활동 감사 로그</h2><table><tr><th>시각</th><th>활동</th><th>작업</th><th>내용</th></tr>'
+    for x in events:body+=f'<tr><td>{esc(x["created_at"][:19])}</td><td>{esc(x["action"])}</td><td>{esc(x["job_id"] or "-")}</td><td>{esc(x["detail"])}</td></tr>'
+    return wrap(body+'</table></main>')
+
+@app.post('/admin/member/{uid}/adjust')
+def admin_adjust(request:Request,uid:int,direction:str=Form(...),amount_krw:int=Form(...),reason:str=Form(...),reference:str=Form(...),user=Depends(admin)):
+    guard_origin(request)
+    if direction not in ('credit','debit') or not (1<=amount_krw<=1000000000):raise HTTPException(400,'조정값 오류')
+    if not 5<=len(reason.strip())<=300 or not 6<=len(reference.strip())<=100:raise HTTPException(400,'사유 또는 참조값 길이 오류')
+    amount=amount_krw*10 * (1 if direction=='credit' else -1)
+    with db.transaction() as c:
+        if not c.execute('SELECT 1 FROM users WHERE user_id=?',(uid,)).fetchone():raise HTTPException(404,'회원 없음')
+        inserted=c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=? AND balance_tenths+?>=0',(amount,uid,amount)).rowcount
+        if not inserted:raise HTTPException(409,'잔액 부족')
+        try:c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',
+            (uid,'admin_'+direction,amount,reason.strip(),user,'admin_adjust:'+reference.strip(),db.now()))
+        except __import__('sqlite3').IntegrityError:raise HTTPException(409,'이미 사용한 고유 참조값')
+        db.audit(c,user,'admin_'+direction,detail=f'user={uid},amount_tenths={amount},reason={reason.strip()},reference={reference.strip()}')
+    return RedirectResponse(f'/admin/member/{uid}',303)

@@ -10,7 +10,7 @@ def normalize(raw):
     s = re.sub(r'[\s()\-.]', '', s)
     if s.startswith('+82'): s = '0'+s[3:]
     elif s.startswith('82') and len(s) >= 11: s = '0'+s[2:]
-    if not re.fullmatch(r'01[016789]\d{7,8}',s): return None
+    if not re.fullmatch(r'010\d{8}',s): return None
     if s.startswith('010') and len(s) != 11:return None
     return s
 
@@ -33,6 +33,13 @@ def parse_file(name, content):
     if len(content)>config.MAX_BYTES:raise ValueError('파일 용량 제한 초과')
     ext=name.lower().rsplit('.',1)[-1]
     if ext=='csv':rows=_csv_rows(content)
+    elif ext=='txt':
+        decoded=None
+        for enc in ('utf-8-sig','cp949','euc-kr'):
+            try:decoded=content.decode(enc);break
+            except UnicodeDecodeError:pass
+        if decoded is None:raise ValueError('TXT 인코딩을 해석할 수 없습니다.')
+        rows=((line.strip(),) for line in decoded.splitlines() if line.strip())
     elif ext=='xlsx':
         wb=load_workbook(io.BytesIO(content),read_only=True,data_only=True)
         try: rows=wb.active.iter_rows(values_only=True)
@@ -43,7 +50,7 @@ def parse_file(name, content):
         wb=xlrd.open_workbook(file_contents=content)
         sheet=wb.sheet_by_index(0)
         rows=(sheet.row_values(i) for i in range(sheet.nrows))
-    else:raise ValueError('CSV/XLSX/XLS 형식만 허용합니다.')
+    else:raise ValueError('CSV/XLSX/XLS/TXT 형식만 허용합니다.')
     seen=set();phones=[];total=invalid=duplicates=0
     it=iter(rows);first=next(it,None)
     if first is None:raise ValueError('빈 파일입니다.')
