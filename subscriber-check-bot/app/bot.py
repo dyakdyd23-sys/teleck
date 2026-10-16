@@ -108,17 +108,52 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if data=='help':return await q.message.reply_text('📘 <b>서비스 이용 안내</b>\n━━━━━━━━━━━━━━━━━━━━\n<b>01</b>  Excel · CSV · TXT 파일 업로드\n<b>02</b>  번호 정규화·중복 자동 제거\n<b>03</b>  검수 수량·예상 비용 확인\n<b>04</b>  결제 후 작업 진행 상황 확인\n<b>05</b>  검수 완료 시 Excel 결과 수령\n\n📞 <b>고객센터</b>  @teleck777',parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 고객센터 열기',url='https://t.me/teleck777')]]))
         if data.startswith('submit:'):
             jid=service.submit(uid,data[7:]);return await q.message.reply_text('검수 신청 완료. 작업번호: '+jid[:8]+'\n내 작업 메뉴에서 확인해 주세요.')
+        if data.startswith('watch:'):
+            jid=data[6:]
+            with db.transaction() as c:
+                job=c.execute('SELECT id FROM jobs WHERE id=? AND user_id=?',(jid,uid)).fetchone()
+                if not job:return await q.message.reply_text('작업 접근 권한이 없습니다.')
+                status=c.execute('SELECT status FROM jobs WHERE id=?',(jid,)).fetchone()['status']
+                if status not in ('pending','processing'):return await q.message.reply_text('이미 종료된 작업입니다.')
+                sent=await q.message.reply_text('📡 실시간 검수 진행 상황 연결 중…')
+                c.execute('INSERT OR REPLACE INTO job_watches(job_id,user_id,chat_id,message_id) VALUES(?,?,?,?)',
+                          (jid,uid,sent.chat_id,sent.message_id))
+            return
+        if data.startswith('refresh:'):
+            data='job:'+data[8:]
+        if data.startswith('canceljob:'):
+            return await q.message.reply_text(service.cancel_stalled(uid,data[10:]))
         if data.startswith('job:'):
             jid=data[4:];j=next((x for x in service.list_jobs(uid) if x['id']==jid),None)
             if not j:return await q.message.reply_text('작업 접근 권한이 없습니다.')
-            kb=InlineKeyboardMarkup([[InlineKeyboardButton('📥 가입자 전체 Excel',callback_data='download:'+jid+':xlsx:all')],
-              [InlineKeyboardButton(f'최근 {n}일',callback_data=f'download:{jid}:xlsx:{n}') for n in (1,3,7)]]) if j['status'] in ('completed','failed') else None
-            return await q.message.reply_text(f"상태: {j['status']}\n신청: {j['valid_count']:,}\n확인: {j['success_count']:,}\n미처리: {j['failed_count']:,}\n청구: {db.money(j['charged_tenths'])}\n환불: {db.money(j['refunded_tenths'])}",reply_markup=kb)
+            if j['status'] in ('completed','failed','cancelled'):
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton('📥 가입자 전체 Excel',callback_data='download:'+jid+':xlsx:all')],
+                    [InlineKeyboardButton(f'최근 {n}일',callback_data=f'download:{jid}:xlsx:{n}') for n in (1,3,7)]])
+            else:
+                from datetime import datetime,timezone
+                with db.connect() as c:
+                    ctrl=c.execute('SELECT * FROM job_control WHERE job_id=?',(jid,)).fetchone()
+                    batch=c.execute("SELECT COUNT(*) AS n FROM batches WHERE job_id=? AND state='processing'",(jid,)).fetchone()['n']
+                elapsed=max(0,int((datetime.now(timezone.utc)-datetime.fromisoformat(ctrl['last_progress_at'] if ctrl else j['created_at'])).total_seconds()))
+                progress=int(j['success_count']*100/j['valid_count']) if j['valid_count'] else 0
+                stalled=elapsed>=300
+                kb=InlineKeyboardMarkup([[InlineKeyboardButton('🔄 최신 상태 확인',callback_data='refresh:'+jid),InlineKeyboardButton('📡 자동 갱신',callback_data='watch:'+jid)],
+                    [InlineKeyboardButton('⏸ 5분 무진전 · 취소 요청',callback_data='canceljob:'+jid)] ] if stalled and not (ctrl and ctrl['cancel_requested_at']) else
+                    [[InlineKeyboardButton('🔄 최신 상태 확인',callback_data='refresh:'+jid),InlineKeyboardButton('📡 자동 갱신',callback_data='watch:'+jid)]])
+                return await q.message.reply_text(
+                    f'📊 <b>검수 진행 현황</b>\n━━━━━━━━━━━━━━━━\n'
+                    f'작업번호: <code>{jid[:12]}</code>\n상태: {"취소 대조 중" if ctrl and ctrl["cancel_requested_at"] else j["status"]}\n'
+                    f'검수 완료 확인: <b>{j["success_count"]:,} / {j["valid_count"]:,}</b> ({progress}%)\n'
+                    f'API 처리 중 배치: {batch}개\n마지막 결과 진전 후: {elapsed//60}분 {elapsed%60}초\n'
+                    f'청구: {db.money(j["charged_tenths"])} / 환불: {db.money(j["refunded_tenths"])}\n\n'
+                    '※ 확인된 결과 기준이며 API가 진행량을 제공하지 않으면 실제 처리율과 다를 수 있습니다.',
+                    parse_mode='HTML',reply_markup=kb)
+            return await q.message.reply_text(f"상태: {j['status']}\n신청: {j['valid_count']:,}\n확인: {j['success_count']:,}\n환불: {db.money(j['refunded_tenths'])}",reply_markup=kb)
         if data.startswith('download:'):
             _,jid,fmt,days=data.split(':')
             if days not in ('all','1','3','7') or fmt!='xlsx':return await q.message.reply_text('허용되지 않는 결과 형식입니다.')
             with db.connect() as c:j=c.execute('SELECT user_id,status FROM jobs WHERE id=?',(jid,)).fetchone()
-            if not j or j['user_id']!=uid or j['status'] not in ('completed','failed'):return await q.message.reply_text('다운로드 권한 또는 완료 내역이 없습니다.')
+            if not j or j['user_id']!=uid or j['status'] not in ('completed','failed','cancelled'):return await q.message.reply_text('다운로드 권한 또는 완료 내역이 없습니다.')
             content,_=export(jid,fmt,days)
             return await q.message.reply_document(InputFile(io.BytesIO(content),filename=f'check_{jid[:8]}_{days}.{fmt}'))
     except Exception as e:await q.message.reply_text(str(e))

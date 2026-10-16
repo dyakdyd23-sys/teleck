@@ -82,6 +82,16 @@ def init():
         CREATE TABLE IF NOT EXISTS result_archives(job_id TEXT PRIMARY KEY REFERENCES jobs(id), sha256 TEXT NOT NULL, delivered_to_user_at TEXT, delivered_to_admin_at TEXT, created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS admin_deliveries(job_id TEXT NOT NULL REFERENCES jobs(id), admin_id INTEGER NOT NULL, delivered_at TEXT NOT NULL, document_sent INTEGER NOT NULL, PRIMARY KEY(job_id,admin_id));
         """)
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS job_control(job_id TEXT PRIMARY KEY REFERENCES jobs(id),
+          last_progress_at TEXT NOT NULL, cancel_requested_at TEXT, last_processed INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS job_watches(job_id TEXT NOT NULL REFERENCES jobs(id), user_id INTEGER NOT NULL,
+          chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, last_text TEXT NOT NULL DEFAULT '',
+          PRIMARY KEY(job_id,user_id));
+        CREATE TABLE IF NOT EXISTS admin_events(id INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind TEXT NOT NULL, user_id INTEGER, job_id TEXT, message TEXT NOT NULL,
+          created_at TEXT NOT NULL, delivered_at TEXT);
+        """)
         c.execute("INSERT OR IGNORE INTO settings VALUES('usdt_krw_rate','0')")
         c.execute("INSERT OR IGNORE INTO settings VALUES('trx_krw_rate','0')")
         c.execute("INSERT OR IGNORE INTO settings VALUES('unit_tenths','6')")
@@ -97,3 +107,8 @@ def money(tenths):
 
 def audit(c,actor,action,job_id=None,detail=None):
     c.execute('INSERT INTO audit(actor,action,job_id,detail,created_at) VALUES(?,?,?,?,?)',(actor,action,job_id,detail,now()))
+
+
+def admin_event(c,kind,user_id=None,job_id=None,message=''):
+    c.execute('INSERT INTO admin_events(kind,user_id,job_id,message,created_at) VALUES(?,?,?,?,?)',
+              (kind,user_id,job_id,message,now()))

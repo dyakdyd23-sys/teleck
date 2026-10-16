@@ -74,6 +74,7 @@ def create_topup_request(user_id, amount, rate):
         expiry=int(time.time()*1000)+QUOTE_DURATION_SECONDS*1000
         c.execute("INSERT INTO topup_requests(id,user_id,address,requested_tenths,usdt_milli,rate_krw,status,created_at,expires_at_ms) VALUES(?,?,?,?,?,?,'pending',?,?)",(rid,user_id,address,tenths,milli,int(rate),db.now(),expiry))
         db.audit(c,str(user_id),'topup_requested',detail=f'id={rid};krw_tenths={tenths};usdt_milli={milli};rate={rate}')
+        db.admin_event(c,'topup_requested',user_id,None,f'💳 충전 신청\n회원: {user_id}\n신청: {db.money(tenths)}\n송금 예정: {milli/1000:.3f} USDT\n신청번호: {rid[:12]}')
     return {'id':rid,'address':address,'requested_tenths':tenths,'usdt_milli':milli,'rate':int(rate),'expires_at_ms':expiry}
 
 def active_topup(user_id):
@@ -132,6 +133,7 @@ def record(transfer,address,user_id,assigned_after,rate=None):
             c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',(user_id,'usdt_deposit',invoice['requested_tenths'],f'TRC20 invoice {invoice["id"]} exact match', 'chain','trx:'+txid,db.now()))
             c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(invoice['requested_tenths'],user_id))
             c.execute("UPDATE topup_requests SET status='completed',txid=?,completed_at=? WHERE id=?",(txid,db.now(),invoice['id']))
+            db.admin_event(c,'topup_completed',user_id,None,f'✅ 충전 완료\n회원: {user_id}\n충전: {db.money(invoice["requested_tenths"])}\n입금: {micro/1000000:.3f} USDT\nTXID: {txid}')
             db.audit(c,'chain','usdt_invoice_paid',detail=f'user={user_id},invoice={invoice["id"]},txid={txid}')
             return True
         reason='no_matching_active_invoice_or_amount_or_timestamp'

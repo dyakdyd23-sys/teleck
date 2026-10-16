@@ -10,7 +10,7 @@ async def cycle():
     except Exception:return
     # At most one creation and one poll per tick, with conservative rate limiting.
     with db.transaction() as c:
-        row=c.execute("SELECT id FROM jobs WHERE status IN ('pending','processing') AND EXISTS (SELECT 1 FROM phones p WHERE p.job_id=jobs.id AND p.state='pending' AND NOT EXISTS(SELECT 1 FROM batch_phones bp JOIN batches b ON bp.batch_id=b.id WHERE b.job_id=p.job_id AND bp.phone=p.phone)) ORDER BY created_at LIMIT 1").fetchone()
+        row=c.execute("SELECT id FROM jobs WHERE status IN ('pending','processing') AND NOT EXISTS (SELECT 1 FROM job_control jc WHERE jc.job_id=jobs.id AND jc.cancel_requested_at IS NOT NULL) AND EXISTS (SELECT 1 FROM phones p WHERE p.job_id=jobs.id AND p.state='pending' AND NOT EXISTS(SELECT 1 FROM batch_phones bp JOIN batches b ON bp.batch_id=b.id WHERE b.job_id=p.job_id AND bp.phone=p.phone)) ORDER BY created_at LIMIT 1").fetchone()
         if row:
             jid=row['id']
             limit=provider.d['max_batch_size']
@@ -67,17 +67,29 @@ async def cycle():
                 c.execute('UPDATE batches SET error=? WHERE id=?',(str(e)[:300],b['id']))
             log.warning('Provider poll failed for batch %s: %s',b['id'],type(e).__name__)
     with db.transaction() as c:
-        for j in c.execute("SELECT id FROM jobs WHERE status='processing'").fetchall():
+        for j in c.execute("SELECT id FROM jobs WHERE status IN ('pending','processing')").fetchall():
             jid=j['id']
             remaining=c.execute("SELECT COUNT(*) FROM phones p WHERE job_id=? AND state='pending' AND NOT EXISTS(SELECT 1 FROM batch_phones bp WHERE bp.phone=p.phone AND bp.batch_id IN(SELECT id FROM batches WHERE job_id=?))",(jid,jid)).fetchone()[0]
             live=c.execute("SELECT COUNT(*) FROM batches WHERE job_id=? AND state IN('pending','creating','processing','reconcile')",(jid,)).fetchone()[0]
             done=c.execute("SELECT COUNT(*) FROM phones WHERE job_id=? AND state='done'",(jid,)).fetchone()[0]
             all_count=c.execute('SELECT valid_count FROM jobs WHERE id=?',(jid,)).fetchone()[0]
+            progress=c.execute('SELECT last_processed FROM job_control WHERE job_id=?',(jid,)).fetchone()
+            if progress is None:
+                c.execute('INSERT OR IGNORE INTO job_control(job_id,last_progress_at) VALUES(?,?)',(jid,db.now()))
+                progress=c.execute('SELECT last_processed FROM job_control WHERE job_id=?',(jid,)).fetchone()
+            if done>progress['last_processed']:
+                c.execute('UPDATE job_control SET last_processed=?,last_progress_at=? WHERE job_id=?',(done,db.now(),jid))
+            cancelled=c.execute('SELECT cancel_requested_at FROM job_control WHERE job_id=?',(jid,)).fetchone()
+            should_cancel=bool(cancelled and cancelled['cancel_requested_at'])
+            if should_cancel:
+                c.execute("UPDATE batches SET state='cancelled',updated_at=? WHERE job_id=? AND state='pending'",(db.now(),jid))
+                live=c.execute("SELECT COUNT(*) FROM batches WHERE job_id=? AND state IN('creating','processing','reconcile')",(jid,)).fetchone()[0]
+                if not live:remaining=0
             c.execute('UPDATE jobs SET processed_count=?,success_count=?,failed_count=?,updated_at=? WHERE id=?',
                       (all_count-remaining if not live else done,done,max(0,all_count-done) if not live and not remaining else 0,db.now(),jid))
             if not live and not remaining:
                 failed=all_count-done
-                c.execute('UPDATE jobs SET status=?,updated_at=? WHERE id=?',('completed' if done else 'failed',db.now(),jid))
+                c.execute('UPDATE jobs SET status=?,updated_at=? WHERE id=?',('cancelled' if should_cancel else ('completed' if done else 'failed'),db.now(),jid))
                 db_refund=db_refund_import()
                 db_refund(c,jid)
                 # Stable canonical digest of the exact stored result rows, independent of export format.
@@ -85,6 +97,8 @@ async def cycle():
                 digest=hashlib.sha256(('\n'.join('\t'.join('' if val is None else str(val) for val in row) for row in lines)).encode('utf-8')).hexdigest()
                 c.execute('INSERT OR IGNORE INTO result_archives(job_id,sha256,created_at) VALUES(?,?,?)',(jid,digest,db.now()))
                 db.audit(c,'worker','results_archived',jid,digest)
+                job=c.execute('SELECT user_id,status,valid_count,success_count,refunded_tenths FROM jobs WHERE id=?',(jid,)).fetchone()
+                db.admin_event(c,'job_finished',job['user_id'],jid,f'✅ 검수 종료\n회원: {job["user_id"]}\n작업: {jid[:12]}\n상태: {job["status"]}\n완료: {job["success_count"]:,}/{job["valid_count"]:,}\n환불: {db.money(job["refunded_tenths"])}')
 
 def db_refund_import():
     from .service import refund_for_unresolved

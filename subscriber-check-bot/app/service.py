@@ -37,6 +37,8 @@ def submit(user_id, preview_id):
         c.execute('INSERT INTO ledger(user_id,job_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?)',
                   (user_id,jid,'charge',-amount,'검수 신청','system',f'charge:{jid}',db.now()))
         c.execute('DELETE FROM previews WHERE id=?',(preview_id,))
+        c.execute('INSERT INTO job_control(job_id,last_progress_at) VALUES(?,?)',(jid,db.now()))
+        db.admin_event(c,'job_submitted',user_id,jid,f'🔍 검수 신청\n회원: {user_id}\n작업: {jid[:12]}\n수량: {n:,}건\n차감: {db.money(amount)}')
         db.audit(c,str(user_id),'submit',jid,f'count={n}')
         return jid
 
@@ -73,3 +75,22 @@ def list_jobs(user_id=None):
     with db.connect() as c:
         if user_id is None:return [dict(x) for x in c.execute('SELECT * FROM jobs ORDER BY created_at DESC LIMIT 100')]
         return [dict(x) for x in c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(user_id,))]
+
+
+def cancel_stalled(user_id,job_id):
+    """Stop new batches, but do not refund while provider batches are unresolved."""
+    from datetime import datetime,timezone
+    with db.transaction() as c:
+        j=c.execute('SELECT * FROM jobs WHERE id=? AND user_id=?',(job_id,user_id)).fetchone()
+        if not j:raise ValueError('해당 작업을 찾을 수 없습니다.')
+        if j['status'] not in ('pending','processing'):raise ValueError('이미 종료된 작업입니다.')
+        x=c.execute('SELECT * FROM job_control WHERE job_id=?',(job_id,)).fetchone()
+        last=(x['last_progress_at'] if x else j['created_at'])
+        stalled=max(0,int((datetime.now(timezone.utc)-datetime.fromisoformat(last)).total_seconds()))
+        if stalled<300:raise ValueError(f'5분 이상 진행이 없을 때 취소할 수 있습니다. {300-stalled}초 남았습니다.')
+        if x and x['cancel_requested_at']:return '이미 취소 요청되었습니다. 외부 작업 확인 후 정산됩니다.'
+        if not x:c.execute('INSERT INTO job_control(job_id,last_progress_at) VALUES(?,?)',(job_id,last))
+        c.execute('UPDATE job_control SET cancel_requested_at=? WHERE job_id=?',(db.now(),job_id))
+        db.audit(c,str(user_id),'cancel_requested',job_id,'stalled_seconds='+str(stalled))
+        db.admin_event(c,'cancel_requested',user_id,job_id,f'⏸ 검수 취소 요청\n회원: {user_id}\n작업: {job_id[:12]}\n무진전: {stalled}초')
+        return '취소 요청을 접수했습니다. 미전송 배치는 중단하고, 외부에서 진행 중인 작업은 결과 확인 후 미처리분을 환불합니다.'
