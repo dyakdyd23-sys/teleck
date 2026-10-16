@@ -58,17 +58,31 @@ def credit(user_id,amount_tenths,actor,reference):
         db.audit(c,actor,'credit',detail=f'user={user_id},amount_tenths={amount_tenths},reference={reference}')
 
 def refund_for_unresolved(c,jid,actor='system'):
+    """Refund only proven unprocessed input numbers, not missing/matched result rows.
+
+    `reconcile`, `creating`, and `processing` batches are ambiguous: never refund
+    them before external confirmation. `completed` batches are billable regardless
+    of how many joined accounts were returned in the export.
+    """
     j=c.execute('SELECT * FROM jobs WHERE id=?',(jid,)).fetchone()
-    unresolved=c.execute("SELECT COUNT(*) FROM phones WHERE job_id=? AND state!='done'",(jid,)).fetchone()[0]
-    amount=min(unresolved*j['unit_tenths'],j['charged_tenths']-j['refunded_tenths'])
-    if amount:
-        key=f'refund:unresolved:{jid}'
+    if not j:raise ValueError('작업이 없습니다.')
+    # A successful provider batch counts as processed even if export lists only
+    # registered users. This count also handles existing historical pending rows.
+    refundable=c.execute("""SELECT COUNT(*) FROM phones p WHERE p.job_id=? AND p.state!='done'
+      AND NOT EXISTS (
+       SELECT 1 FROM batch_phones bp JOIN batches b ON b.id=bp.batch_id
+       WHERE b.job_id=p.job_id AND bp.phone=p.phone
+       AND b.state IN ('completed','creating','processing','reconcile','pending')
+      )""",(jid,)).fetchone()[0]
+    amount=min(refundable*j['unit_tenths'],j['charged_tenths']-j['refunded_tenths'])
+    if amount>0:
+        key=f'refund:unprocessed:{jid}'
         inserted=c.execute('INSERT OR IGNORE INTO ledger(user_id,job_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?,?)',
-                    (j['user_id'],jid,'refund',amount,'누락·미처리 건 환불',actor,key,db.now())).rowcount
+                    (j['user_id'],jid,'refund',amount,'검수 미접수·실패 확정 건 환불',actor,key,db.now())).rowcount
         if inserted:
             c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(amount,j['user_id']))
             c.execute('UPDATE jobs SET refunded_tenths=refunded_tenths+? WHERE id=?',(amount,jid))
-            db.audit(c,actor,'refund',jid,f'count={unresolved},amount_tenths={amount}')
+            db.audit(c,actor,'refund',jid,f'count={refundable},amount_tenths={amount}')
     return amount
 
 def list_jobs(user_id=None):
@@ -93,4 +107,4 @@ def cancel_stalled(user_id,job_id):
         c.execute('UPDATE job_control SET cancel_requested_at=? WHERE job_id=?',(db.now(),job_id))
         db.audit(c,str(user_id),'cancel_requested',job_id,'stalled_seconds='+str(stalled))
         db.admin_event(c,'cancel_requested',user_id,job_id,f'⏸ 검수 취소 요청\n회원: {user_id}\n작업: {job_id[:12]}\n무진전: {stalled}초')
-        return '취소 요청을 접수했습니다. 미전송 배치는 중단하고, 외부에서 진행 중인 작업은 결과 확인 후 미처리분을 환불합니다.'
+        return '취소 요청을 접수했습니다. 아직 접수하지 않은 건만 정산 대상이며, 이미 접수된 검수는 처리 여부를 확인합니다.'

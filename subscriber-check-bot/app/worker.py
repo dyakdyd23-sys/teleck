@@ -93,6 +93,13 @@ async def cycle():
                         seen.add(phone)
                         c.execute("UPDATE phones SET state='done',joined=?,uid=?,username=?,last_active=? WHERE job_id=? AND phone=? AND state='pending'",
                                   (r['joined'],r['uid'],r['username'],r['last_active'],b['job_id'],phone))
+                    if state=='completed':
+                        # A provider export may contain only matched Telegram accounts.
+                        # Every submitted number in a confirmed completed batch was checked,
+                        # even when omitted from the result export. Omission is NOT refundable.
+                        c.execute("""UPDATE phones SET state='done' WHERE job_id=? AND state='pending'
+                            AND phone IN (SELECT phone FROM batch_phones WHERE batch_id=?)""",
+                            (b['job_id'],b['id']))
                     c.execute('UPDATE batches SET state=?,error=NULL,updated_at=? WHERE id=?',(state,db.now(),b['id']))
             elif state=='processing' or state=='pending':pass
             else:raise ValueError('unknown state')
@@ -124,6 +131,9 @@ async def cycle():
             if not live and not remaining:
                 failed=all_count-done
                 c.execute('UPDATE jobs SET status=?,updated_at=? WHERE id=?',('cancelled' if should_cancel else ('completed' if done else 'failed'),db.now(),jid))
+                # Refund only unprocessed requests in conclusively unsubmitted / failed batches.
+                # Valid requests that completed provider processing are never refunded because
+                # few (or no) Telegram accounts matched the requested filters.
                 db_refund=db_refund_import()
                 db_refund(c,jid)
                 # Stable canonical digest of the exact stored result rows, independent of export format.

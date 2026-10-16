@@ -38,10 +38,10 @@ async def refresh_watches():
                 percent=int(w['success_count']*100/w['valid_count']) if w['valid_count'] else 0
                 display=('취소 대조 중' if w['cancel_requested_at'] and not terminal else w['status'])
                 txt=(f'📡 검수 실시간 현황\n작업: {w["job_id"][:12]}\n상태: {display}\n'
-                     f'확인된 완료: {w["success_count"]:,} / {w["valid_count"]:,} ({percent}%)\n'
-                     f'마지막 처리 진전: {elapsed//60}분 {elapsed%60}초 전\n'
+                     f'검수 처리: {w["success_count"]:,} / {w["valid_count"]:,} ({percent}%)\n'
+                     f'최근 진행: {elapsed//60}분 전\n'
                      f'청구: {db.money(w["charged_tenths"])} / 환불: {db.money(w["refunded_tenths"])}\n'
-                     '※ API의 별도 진행률이 아니라 확인된 결과 건수 기준입니다.\n'
+                     '\n'
                      + ('✅ 작업 종료 · 내 작업에서 결과 확인' if terminal else '🔄 약 45초마다 자동 갱신'))
                 if txt!=w['last_text']:
                     controls=[]

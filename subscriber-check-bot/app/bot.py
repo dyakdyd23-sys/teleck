@@ -148,10 +148,10 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
                 return await q.message.reply_text(
                     f'📊 <b>검수 진행 현황</b>\n━━━━━━━━━━━━━━━━\n'
                     f'작업번호: <code>{jid[:12]}</code>\n상태: {"취소 대조 중" if ctrl and ctrl["cancel_requested_at"] else j["status"]}\n'
-                    f'검수 완료 확인: <b>{j["success_count"]:,} / {j["valid_count"]:,}</b> ({progress}%)\n'
-                    f'API 처리 중 배치: {batch}개\n마지막 결과 진전 후: {elapsed//60}분 {elapsed%60}초\n'
+                    f'검수 처리: <b>{j["success_count"]:,} / {j["valid_count"]:,}</b> ({progress}%)\n'
+                    f'최근 진행: {elapsed//60}분 전\n'
                     f'청구: {db.money(j["charged_tenths"])} / 환불: {db.money(j["refunded_tenths"])}\n\n'
-                    '※ 확인된 결과 기준이며 API가 진행량을 제공하지 않으면 실제 처리율과 다를 수 있습니다.',
+                    '검수 결과는 작업 완료 후 Excel로 제공됩니다.',
                     parse_mode='HTML',reply_markup=kb)
             return await q.message.reply_text(f"상태: {j['status']}\n신청: {j['valid_count']:,}\n확인: {j['success_count']:,}\n환불: {db.money(j['refunded_tenths'])}",reply_markup=kb)
         if data.startswith('download:'):
