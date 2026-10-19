@@ -83,7 +83,8 @@ def dashboard(user=Depends(admin)):
         body+=f'<label>{label} <input type="number" min="1" name="{key}" value="{settings[key]}" required></label>'
     body+='<button>설정 저장</button></form></main>'
     body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_krw" placeholder="충전 금액(원) 예: 50000.0" min="0.1" step="0.1" required><span class="tag">거래 참조번호 자동 발급</span><button>충전</button></form></main>'
-    body+='<main><h2>USDT · TRC-20 자동충전</h2><p>환율은 Google Sheets A1(USD/KRW)에서 자동 조회합니다. 충전은 USDT(TRC-20)만 지원합니다. TRX 입금은 잔액에 반영되지 않습니다.</p><p>환율 상태: '+('정상 · '+str(sheet_rate.available_rate())+'원/USDT' if sheet_rate.available_rate() else '미설정 또는 갱신 실패 · 충전 중단')+'</p><form method="post" action="/admin/deposit-pool"><input name="address" placeholder="새 TRON 수신 주소 (회원 자동 배정용)" required><button>주소 풀에 추가</button></form><p>주소는 관리자에서 일괄 관리하며 회원이 충전 메뉴를 열 때 빈 주소를 자동 배정합니다. 이미 배정된 주소는 신규 입금신청이 없을 때 변경할 수 있습니다. 기존 입금·정산 기록은 보존됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID (수동 배정)" required><input name="address" placeholder="전용 TRON 주소" required><button>회원 주소 지정 / 교체</button></form></main>'
+    current_shared=deposits.shared_address() or '미설정'
+    body+=f'<main><h2>USDT · TRC-20 공용 충전주소</h2><p>현재 공용 주소: <code>{esc(current_shared)}</code></p><form method="post" action="/admin/shared-deposit-address"><input name="address" placeholder="공용 TRON USDT 수신주소" required><button>공용 주소 저장 / 변경</button></form><p>주소를 변경하면 신규 신청부터 적용합니다. 기존 입금·신청·원장은 그대로 보존합니다. 진행 중인 충전 신청이 있으면 변경할 수 없습니다.</p></main>'
     with db.connect() as c:
         invoices=c.execute("SELECT r.*,u.balance_tenths FROM topup_requests r JOIN users u ON u.user_id=r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         unmatched=c.execute("SELECT * FROM unmatched_deposits ORDER BY seen_at DESC LIMIT 50").fetchall()
@@ -158,7 +159,6 @@ def customer_form(title,action,fields):
 @app.get('/')
 def home(request:Request):
     uid=accounts.user_from_token(request.cookies.get('checker_session',''))
-    if uid is not None:deposits.auto_assign(uid)
     if uid is None:return wrap('<main><h2>가입자 검수봇</h2><p>검수 신청 및 결과 확인을 위한 회원 페이지입니다.</p><a href="/register">회원가입</a> · <a href="/login">로그인</a></main>')
     with db.connect() as c:
         balance=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()[0]
@@ -166,7 +166,7 @@ def home(request:Request):
         rate=db.setting(c,'usdt_krw_rate')
         jobs=c.execute('SELECT * FROM jobs WHERE user_id=? ORDER BY created_at DESC LIMIT 50',(uid,)).fetchall()
         deposits_rows=c.execute('SELECT txid,usdt_micro,krw_tenths FROM deposits WHERE user_id=? ORDER BY id DESC LIMIT 15',(uid,)).fetchall()
-    address=esc(row['address']) if row else '관리자 주소 배정 대기 중 · 입금하지 마세요'
+    address=esc(deposits.shared_address() or '관리자 공용 충전주소 대기 중 · 입금하지 마세요')
     active_rate=sheet_rate.available_rate()
     body=f'<main><h2>내 잔액: {db.money(balance)}</h2><p><b>USDT · TRC-20 전용 자동충전</b></p><p>전용 입금주소: <strong>{address if active_rate and config.TRONGRID_KEY else "준비 중 · 입금하지 마세요"}</strong></p><p>구글 스프레드시트 USD/KRW 기준 환산: {active_rate:,}원/USDT</p><p><b>TRX는 충전 지원하지 않습니다. TRON 체인의 USDT(TRC-20)만 전송하세요.</b></p></main>'
     body+='<main><h2>검수 파일</h2><form method="post" action="/customer/preview" enctype="multipart/form-data"><input type="file" name="file" accept=".csv,.xlsx,.xls,.txt" required><button>파일 분석</button></form></main>'
@@ -227,19 +227,24 @@ def customer_download(jid:str,fmt:str='xlsx',days:str='all',uid:int=Depends(cust
     with db.transaction() as c:c.execute('UPDATE result_archives SET delivered_to_user_at=COALESCE(delivered_to_user_at,?) WHERE job_id=?',(db.now(),jid))
     return Response(content,media_type=mime,headers={'Content-Disposition':f'attachment; filename="check_{jid[:12]}.{fmt}"','Cache-Control':'no-store'})
 
-@app.post('/admin/deposit-pool')
-def admin_deposit_pool(request:Request,address:str=Form(...),user=Depends(admin)):
+@app.post('/admin/shared-deposit-address')
+def admin_shared_deposit_address(request:Request,address:str=Form(...),user=Depends(admin)):
     guard_origin(request)
-    try:deposits.add_to_pool(address.strip(),actor=user)
-    except Exception as e:raise HTTPException(400,str(e))
+    try:deposits.set_shared_address(address.strip(),actor=user)
+    except ValueError as e:raise HTTPException(400,str(e))
     return RedirectResponse('/admin',303)
 
-@app.post('/admin/deposit-address')
-def admin_deposit_address(request:Request,user_id:int=Form(...),address:str=Form(...),user=Depends(admin)):
+# Deprecated individual-address endpoints: public UI uses the one shared address.
+@app.post('/admin/deposit-pool')
+def admin_deposit_pool(request:Request,user=Depends(admin)):
     guard_origin(request)
-    try:deposits.assign(user_id,address.strip(),actor=user)
-    except Exception as e:raise HTTPException(400,str(e))
-    return RedirectResponse('/admin',303)
+    raise HTTPException(410,'공용 주소 설정만 지원합니다. /admin에서 공용 지갑주소를 설정하세요.')
+
+@app.post('/admin/deposit-address')
+def admin_deposit_address(request:Request,user=Depends(admin)):
+    guard_origin(request)
+    raise HTTPException(410,'회원별 주소 지정은 비활성화되었습니다. 공용 지갑주소만 사용하세요.')
+
 @app.post('/admin/usdt-rate')
 def admin_usdt_rate(request:Request,rate:int=Form(...),user=Depends(admin)):
     guard_origin(request)
@@ -320,7 +325,7 @@ def admin_member(uid:int,user=Depends(admin)):
         trx_deposits=c.execute('SELECT * FROM trx_deposits WHERE user_id=? ORDER BY id DESC LIMIT 50',(uid,)).fetchall()
         events=c.execute('SELECT * FROM audit WHERE actor=? OR detail LIKE ? ORDER BY id DESC LIMIT 100',(str(uid),f'%user={uid},%')).fetchall()
         address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
-    body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>입금 주소: {esc(address["address"] if address else "미등록")}</p><form method="post" action="/admin/deposit-address"><input type="hidden" name="user_id" value="{uid}"><input name="address" placeholder="변경할 TRON 입금주소" required><button>회원 충전주소 변경</button></form><p>미완료 충전 신청이 있으면 변경이 차단됩니다. 주소 변경 이후 과거 입금은 자동 재배정되지 않습니다.</p></main>'
+    body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>공용 입금 주소: {esc(deposits.shared_address() or "미등록")}</p></main>'
     body+=f"""<main><h2>관리자 수동 잔액 조정</h2><p>조정 사유를 남기며 거래 참조번호는 자동 생성됩니다. 차감은 보유잔액 범위 내에서만 가능합니다.</p>
     <form method="post" action="/admin/member/{uid}/adjust"><label>유형 <select name="direction"><option value="credit">충전 (+)</option><option value="debit">차감 (-)</option></select></label>
     <label>금액(원) <input type="number" name="amount_krw" min="1" max="1000000000" required></label>

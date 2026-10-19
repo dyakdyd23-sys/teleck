@@ -68,7 +68,6 @@ async def buttons(update:Update,context:ContextTypes.DEFAULT_TYPE):
         if data=='guide':return await q.message.reply_text('<b>📂 검수 파일 업로드</b>\n<i>아래 형식의 파일을 이 채팅에 보내주세요.</i>\n\n━━━━━━━━━━━━━━━━━━━━\n<b>지원 파일</b>  XLSX · XLS · CSV · TXT\n<b>전화번호 예시</b>\n<code>010-1234-5678</code>\n<code>8210-1234-5678</code>\n<code>+821012345678</code>\n━━━━━━━━━━━━━━━━━━━━\n\n✅ 중복·형식 오류 자동 정리\n✅ 8210 번호를 010으로 변환\n✅ 결과는 Excel(.xlsx)로 전달\n\n<i>파일을 업로드하면 예상 비용을 먼저 보여드립니다.</i>',parse_mode='HTML',reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton('💬 문의하기',url='https://t.me/teleck777')]]))
         if data=='cancel':return await q.message.reply_text('신청을 취소했습니다. 다른 파일을 올려 주세요.')
         if data=='balance':
-            deposits.auto_assign(uid)
             with db.connect() as c:
                 row=c.execute('SELECT balance_tenths FROM users WHERE user_id=?',(uid,)).fetchone()
             rate=sheet_rate.available_rate()
