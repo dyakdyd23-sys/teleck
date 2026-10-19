@@ -2,7 +2,7 @@ import asyncio, html, secrets, base64, os, logging, uuid
 from .money_input import parse_krw_tenths
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request, Form
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from . import config,db,service,sheet_rate
 from .bot import run as bot_run
@@ -88,9 +88,17 @@ def dashboard(user=Depends(admin)):
     with db.connect() as c:
         invoices=c.execute("SELECT r.*,u.balance_tenths FROM topup_requests r JOIN users u ON u.user_id=r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         unmatched=c.execute("SELECT * FROM unmatched_deposits ORDER BY seen_at DESC LIMIT 50").fetchall()
-    body+='<main><h2>USDT 충전 신청 내역</h2><p>송금 요청액·정확한 수량·상태 및 거래 식별자를 조회합니다. 미일치 입금은 자동 적립되지 않습니다.</p><table><tr><th>신청번호</th><th>회원</th><th>신청액</th><th>USDT</th><th>환율</th><th>상태</th><th>TXID</th></tr>'
+    body+='<main><h2>USDT 충전 신청 내역</h2><p>송금 요청액·정확한 수량·상태 및 거래 식별자를 조회합니다. 미일치 입금은 자동 적립되지 않습니다.</p><table><tr><th>신청번호</th><th>회원</th><th>신청액</th><th>USDT</th><th>환율</th><th>상태</th><th>TXID</th><th>관리자 처리</th></tr>'
     for r in invoices:
-        body+=f'<tr><td>{esc(r["id"][:12])}</td><td>{r["user_id"]}</td><td>{db.money(r["requested_tenths"])}</td><td>{r["usdt_milli"]/1000:.3f}</td><td>{r["rate_krw"]:,}</td><td>{esc(r["status"])}</td><td>{esc(r["txid"] or "-")}</td></tr>'
+        actions='—'
+        if r['status'] in ('pending','expired'):
+            actions=(f'<form method="post" action="/admin/topup/resolve">'
+                     f'<input type="hidden" name="request_id" value="{esc(r["id"])}">'
+                     f'<input name="reason" placeholder="처리 사유 (필수)" minlength="5" required>'
+                     f'<input name="txid" placeholder="승인 시 미매칭 입금 TXID 64자리">'
+                     f'<button name="action" value="approve">입금 확인 후 승인</button>'
+                     f'<button name="action" value="reject" style="background:#92353c" onclick="return confirm(&quot;입금이 진행됐다면 거절 후 자동 적립되지 않습니다. 거절할까요?&quot;)">신청 거절</button></form>')
+        body+=f'<tr><td>{esc(r["id"][:12])}</td><td>{r["user_id"]}</td><td>{db.money(r["requested_tenths"])}</td><td>{r["usdt_milli"]/1000:.3f}</td><td>{r["rate_krw"]:,}</td><td>{esc(r["status"])}</td><td>{esc(r["txid"] or "-")}</td><td>{actions}</td></tr>'
     body+='</table></main><main><h2>자동 반영 보류 입금 · 관리자 대조 필요</h2><p>입금 확인은 됐으나 유효한 신청과 일치하지 않은 거래입니다. 거래내역을 직접 확인한 뒤 기존 수동 잔액 조정 기능으로 별도 정산하세요. 중복 지급에 주의하세요.</p><table><tr><th>회원</th><th>USDT</th><th>TXID</th><th>사유</th></tr>'
     for r in unmatched:
         body+=f'<tr><td>{r["user_id"]}</td><td>{r["usdt_micro"]/1000000:.6f}</td><td>{esc(r["txid"])}</td><td>{esc(r["reason"])}</td></tr>'
@@ -226,6 +234,15 @@ def customer_download(jid:str,fmt:str='xlsx',days:str='all',uid:int=Depends(cust
     except Exception as e:raise HTTPException(400,str(e))
     with db.transaction() as c:c.execute('UPDATE result_archives SET delivered_to_user_at=COALESCE(delivered_to_user_at,?) WHERE job_id=?',(db.now(),jid))
     return Response(content,media_type=mime,headers={'Content-Disposition':f'attachment; filename="check_{jid[:12]}.{fmt}"','Cache-Control':'no-store'})
+
+@app.post('/admin/topup/resolve')
+def admin_topup_resolve(request:Request,request_id:str=Form(...),action:str=Form(...),reason:str=Form(...),txid:str=Form(''),user=Depends(admin)):
+    guard_origin(request)
+    try:
+        deposits.admin_resolve_topup(request_id,action,reason,actor=user,txid=txid)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    return RedirectResponse('/admin',303)
 
 @app.post('/admin/shared-deposit-address')
 def admin_shared_deposit_address(request:Request,address:str=Form(...),user=Depends(admin)):

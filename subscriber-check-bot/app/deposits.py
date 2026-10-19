@@ -139,6 +139,48 @@ def cancel_topup(user_id):
         if count:db.audit(c,str(user_id),'topup_cancelled')
     return count
 
+def admin_resolve_topup(request_id, action, reason, actor='admin', txid=''):
+    """Resolve a top-up without inventing blockchain evidence.
+
+    Approval requires a confirmed TRC20 USDT deposit already captured in the
+    unmatched-deposit suspense table. All updates use one DB transaction.
+    """
+    reason=(reason or '').strip()
+    if len(reason)<5:raise ValueError('처리 사유를 5자 이상 입력해 주세요.')
+    if action not in ('approve','reject'):raise ValueError('처리 유형이 올바르지 않습니다.')
+    with db.transaction() as c:
+        request=c.execute('SELECT * FROM topup_requests WHERE id=?',(request_id,)).fetchone()
+        if not request:raise ValueError('충전 신청을 찾을 수 없습니다.')
+        if request['status'] not in ('pending','expired'):
+            raise ValueError('이미 처리된 신청입니다. 중복 승인·거절할 수 없습니다.')
+        if action=='reject':
+            c.execute("UPDATE topup_requests SET status='cancelled' WHERE id=? AND status IN ('pending','expired')",(request_id,))
+            db.audit(c,actor,'admin_reject_topup',detail=f'invoice={request_id};user={request["user_id"]};reason={reason}')
+            db.admin_event(c,'topup_rejected',request['user_id'],None,f'충전 신청 거절\n회원: {request["user_id"]}\n신청: {request_id[:12]}')
+            return 'cancelled'
+        txid=(txid or '').strip().lower()
+        if len(txid)!=64 or any(ch not in '0123456789abcdef' for ch in txid):
+            raise ValueError('입금 확인된 거래의 64자리 TXID를 입력해 주세요.')
+        if c.execute('SELECT 1 FROM deposits WHERE txid=?',(txid,)).fetchone():
+            raise ValueError('이미 충전 처리된 TXID입니다.')
+        if c.execute('SELECT 1 FROM topup_requests WHERE txid=?',(txid,)).fetchone():
+            raise ValueError('다른 신청에서 처리된 TXID입니다.')
+        pending=c.execute('SELECT * FROM unmatched_deposits WHERE txid=?',(txid,)).fetchone()
+        if not pending:raise ValueError('TronGrid 입금 감시에서 확인된 미매칭 거래가 아닙니다. 승인할 수 없습니다.')
+        if pending['address']!=request['address'] or pending['usdt_micro']!=request['usdt_milli']*1000:
+            raise ValueError('입금 주소 또는 USDT 수량이 신청과 일치하지 않습니다.')
+        uid=request['user_id'];amount=request['requested_tenths']
+        c.execute('INSERT INTO deposits(user_id,txid,event_key,address,usdt_micro,krw_tenths,rate_krw,confirmed_at) VALUES(?,?,?,?,?,?,?,?)',
+                  (uid,txid,txid,request['address'],pending['usdt_micro'],amount,request['rate_krw'],db.now()))
+        c.execute('INSERT INTO ledger(user_id,kind,amount_tenths,reason,actor,idempotency_key,created_at) VALUES(?,?,?,?,?,?,?)',
+                  (uid,'usdt_deposit',amount,f'Admin verified TRC20 invoice {request_id}: {reason}',actor,'trx:'+txid,db.now()))
+        c.execute('UPDATE users SET balance_tenths=balance_tenths+? WHERE user_id=?',(amount,uid))
+        c.execute("UPDATE topup_requests SET status='completed',txid=?,completed_at=? WHERE id=?",(txid,db.now(),request_id))
+        c.execute('DELETE FROM unmatched_deposits WHERE txid=?',(txid,))
+        db.audit(c,actor,'admin_approve_topup',detail=f'invoice={request_id};user={uid};txid={txid};krw_tenths={amount};reason={reason}')
+        db.admin_event(c,'topup_completed',uid,None,f'✅ 관리자 승인 충전\n회원: {uid}\n금액: {db.money(amount)}\nTXID: {txid}')
+        return 'completed'
+
 def coin_display(micro):
     return f'{Decimal(micro)/Decimal(1_000_000):,.3f}'
 
