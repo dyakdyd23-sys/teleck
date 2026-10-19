@@ -16,20 +16,37 @@ def valid_tron_address(address):
     payload,checksum=raw[:-4],raw[-4:]
     return payload[0]==0x41 and hashlib.sha256(hashlib.sha256(payload).digest()).digest()[:4]==checksum
 
-def assign(user_id,address):
+def assign(user_id,address,actor='admin'):
+    """Assign or safely replace an address. Never reuse a retired address."""
     if not valid_tron_address(address):raise ValueError('TRON 주소 체크섬 검증 실패')
-    # Start after assignment: do not attribute historical deposits to a new customer.
     with db.transaction() as c:
         if not c.execute('SELECT 1 FROM users WHERE user_id=?',(user_id,)).fetchone():raise ValueError('사용자가 없습니다.')
-        if c.execute('SELECT 1 FROM deposit_addresses WHERE user_id=?',(user_id,)).fetchone():raise ValueError('기존 입금주소 교체는 지원하지 않습니다. 별도 대조가 필요합니다.')
-        c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))
-        db.audit(c,'admin','assign_deposit_address',detail=f'user={user_id},address={address}')
+        current=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(user_id,)).fetchone()
+        if current and current['address']==address:return address
+        owner=c.execute('SELECT user_id FROM deposit_addresses WHERE address=?',(address,)).fetchone()
+        if owner:raise ValueError('이미 다른 회원에게 배정된 주소입니다.')
+        if c.execute('SELECT 1 FROM retired_deposit_addresses WHERE address=?',(address,)).fetchone():raise ValueError('과거 사용된 주소는 재배정할 수 없습니다.')
+        # Block even expired invoices that are still marked pending until state reconciliation.
+        pending=c.execute("SELECT 1 FROM topup_requests WHERE user_id=? AND status='pending' LIMIT 1",(user_id,)).fetchone()
+        if pending:raise ValueError('미완료 충전 신청이 있습니다. 신청을 종료하고 주소를 변경해 주세요.')
+        # An address may still receive late funds. Retire it permanently from allocation pool.
+        if current:
+            old=current['address']
+            c.execute('DELETE FROM deposit_address_pool WHERE address=?',(old,))
+            c.execute('INSERT OR IGNORE INTO retired_deposit_addresses VALUES(?,?,?)',(old,user_id,db.now()))
+            c.execute('UPDATE deposit_addresses SET address=?,assigned_at=?,active=1,scan_after_ms=? WHERE user_id=?',(address,db.now(),int(time.time()*1000),user_id))
+            db.audit(c,actor,'replace_deposit_address',detail=f'user={user_id},old={old},new={address}')
+        else:
+            c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))
+            db.audit(c,actor,'assign_deposit_address',detail=f'user={user_id},address={address}')
+        c.execute('DELETE FROM deposit_address_pool WHERE address=?',(address,))
+        return address
 
 def add_to_pool(address, actor='admin'):
     """Add an operator-controlled receiving address. No wallet secrets are stored."""
     if not valid_tron_address(address):raise ValueError('TRON 주소 체크섬 검증 실패')
     with db.transaction() as c:
-        if c.execute('SELECT 1 FROM deposit_addresses WHERE address=?',(address,)).fetchone():
+        if c.execute('SELECT 1 FROM retired_deposit_addresses WHERE address=?',(address,)).fetchone() or c.execute('SELECT 1 FROM deposit_addresses WHERE address=?',(address,)).fetchone() or c.execute('SELECT 1 FROM topup_requests WHERE address=?',(address,)).fetchone() or c.execute('SELECT 1 FROM deposits WHERE address=?',(address,)).fetchone():
             raise ValueError('이미 회원에게 배정된 주소입니다.')
         c.execute('INSERT INTO deposit_address_pool VALUES(?,?)',(address,db.now()))
         db.audit(c,actor,'add_deposit_address_pool',detail='address='+address)
@@ -42,7 +59,11 @@ def auto_assign(user_id):
         if not c.execute('SELECT 1 FROM users WHERE user_id=?',(user_id,)).fetchone():raise ValueError('회원 없음')
         available=c.execute("""SELECT p.address FROM deposit_address_pool p
             LEFT JOIN deposit_addresses a ON a.address=p.address
-            WHERE a.address IS NULL ORDER BY p.created_at,p.address LIMIT 1""").fetchone()
+            WHERE a.address IS NULL
+            AND NOT EXISTS(SELECT 1 FROM topup_requests t WHERE t.address=p.address)
+            AND NOT EXISTS(SELECT 1 FROM deposits d WHERE d.address=p.address)
+            AND NOT EXISTS(SELECT 1 FROM retired_deposit_addresses r WHERE r.address=p.address)
+            ORDER BY p.created_at,p.address LIMIT 1""").fetchone()
         if not available:return None
         address=available['address']
         c.execute('INSERT INTO deposit_addresses VALUES(?,?,?,?,?)',(address,user_id,db.now(),1,int(time.time()*1000)))

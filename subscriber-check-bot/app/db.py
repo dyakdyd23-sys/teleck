@@ -63,6 +63,7 @@ def init():
         CREATE TABLE IF NOT EXISTS web_accounts(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id),username TEXT NOT NULL UNIQUE COLLATE NOCASE,password_hash TEXT NOT NULL,created_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS login_sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL REFERENCES users(user_id),expires_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deposit_address_pool(address TEXT PRIMARY KEY,created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS retired_deposit_addresses(address TEXT PRIMARY KEY,user_id INTEGER NOT NULL,retired_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS deposit_addresses(address TEXT PRIMARY KEY,user_id INTEGER NOT NULL UNIQUE REFERENCES users(user_id),assigned_at TEXT NOT NULL,active INTEGER NOT NULL DEFAULT 1,scan_after_ms INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS deposits(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL REFERENCES users(user_id), txid TEXT NOT NULL, event_key TEXT NOT NULL UNIQUE, address TEXT NOT NULL,usdt_micro INTEGER NOT NULL,krw_tenths INTEGER NOT NULL,rate_krw INTEGER NOT NULL,confirmed_at TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_deposits_user ON deposits(user_id,confirmed_at);

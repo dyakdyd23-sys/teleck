@@ -1,4 +1,5 @@
-import asyncio, html, secrets, base64, os, logging
+import asyncio, html, secrets, base64, os, logging, uuid
+from .money_input import parse_krw_tenths
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -52,6 +53,7 @@ def guard_origin(request:Request):
     elif request.cookies.get('checker_session') or request.headers.get('authorization'):
         raise HTTPException(403,'요청 출처 확인 불가')
 
+
 def esc(x):return html.escape(str(x or ''))
 def wrap(body):
     return HTMLResponse('''<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>가입자 검수봇 관리자</title><style>
@@ -80,8 +82,8 @@ def dashboard(user=Depends(admin)):
     for key,label in [('unit_tenths','건당 요금(0.1원 단위)'),('min_count','최소 수량'),('max_count','최대 수량')]:
         body+=f'<label>{label} <input type="number" min="1" name="{key}" value="{settings[key]}" required></label>'
     body+='<button>설정 저장</button></form></main>'
-    body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_tenths" placeholder="0.1원 단위 충전액" min="1" required><input name="reference" placeholder="고유 거래 참조값" required><button>충전</button></form></main>'
-    body+='<main><h2>USDT · TRC-20 자동충전</h2><p>환율은 Google Sheets A1(USD/KRW)에서 자동 조회합니다. 충전은 USDT(TRC-20)만 지원합니다. TRX 입금은 잔액에 반영되지 않습니다.</p><p>환율 상태: '+('정상 · '+str(sheet_rate.available_rate())+'원/USDT' if sheet_rate.available_rate() else '미설정 또는 갱신 실패 · 충전 중단')+'</p><form method="post" action="/admin/deposit-pool"><input name="address" placeholder="새 TRON 수신 주소 (회원 자동 배정용)" required><button>주소 풀에 추가</button></form><p>주소는 관리자에서 일괄 관리하며 회원이 충전 메뉴를 열 때 빈 주소를 자동 배정합니다. 기존 회원 주소는 유지됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID (수동 배정)" required><input name="address" placeholder="전용 TRON 주소" required><button>지정 회원 배정</button></form></main>'
+    body+='<main><h2>관리자 잔액 충전 (운영자 전용)</h2><form method="post" action="/admin/credit"><input type="number" name="user_id" placeholder="Telegram 사용자 ID" required><input type="number" name="amount_krw" placeholder="충전 금액(원) 예: 50000.0" min="0.1" step="0.1" required><span class="tag">거래 참조번호 자동 발급</span><button>충전</button></form></main>'
+    body+='<main><h2>USDT · TRC-20 자동충전</h2><p>환율은 Google Sheets A1(USD/KRW)에서 자동 조회합니다. 충전은 USDT(TRC-20)만 지원합니다. TRX 입금은 잔액에 반영되지 않습니다.</p><p>환율 상태: '+('정상 · '+str(sheet_rate.available_rate())+'원/USDT' if sheet_rate.available_rate() else '미설정 또는 갱신 실패 · 충전 중단')+'</p><form method="post" action="/admin/deposit-pool"><input name="address" placeholder="새 TRON 수신 주소 (회원 자동 배정용)" required><button>주소 풀에 추가</button></form><p>주소는 관리자에서 일괄 관리하며 회원이 충전 메뉴를 열 때 빈 주소를 자동 배정합니다. 이미 배정된 주소는 신규 입금신청이 없을 때 변경할 수 있습니다. 기존 입금·정산 기록은 보존됩니다.</p><form method="post" action="/admin/deposit-address"><input name="user_id" type="number" placeholder="사용자 ID (수동 배정)" required><input name="address" placeholder="전용 TRON 주소" required><button>회원 주소 지정 / 교체</button></form></main>'
     with db.connect() as c:
         invoices=c.execute("SELECT r.*,u.balance_tenths FROM topup_requests r JOIN users u ON u.user_id=r.user_id ORDER BY r.created_at DESC LIMIT 50").fetchall()
         unmatched=c.execute("SELECT * FROM unmatched_deposits ORDER BY seen_at DESC LIMIT 50").fetchall()
@@ -114,9 +116,11 @@ def settings(request:Request,unit_tenths:int=Form(...),min_count:int=Form(...),m
     return HTMLResponse('<meta http-equiv="refresh" content="0;url=/admin">설정 완료')
 
 @app.post('/admin/credit')
-def credit(request:Request,user_id:int=Form(...),amount_tenths:int=Form(...),reference:str=Form(...),user=Depends(admin)):
+def credit(request:Request,user_id:int=Form(...),amount_krw:str=Form(...),user=Depends(admin)):
     guard_origin(request)
-    try:service.credit(user_id,amount_tenths,user,reference)
+    try:
+        amount_tenths=parse_krw_tenths(amount_krw)
+        service.credit(user_id,amount_tenths,user,uuid.uuid4().hex)
     except Exception as e:raise HTTPException(400,str(e))
     return HTMLResponse('<meta http-equiv="refresh" content="0;url=/admin">충전 완료')
 
@@ -233,7 +237,7 @@ def admin_deposit_pool(request:Request,address:str=Form(...),user=Depends(admin)
 @app.post('/admin/deposit-address')
 def admin_deposit_address(request:Request,user_id:int=Form(...),address:str=Form(...),user=Depends(admin)):
     guard_origin(request)
-    try:deposits.assign(user_id,address.strip())
+    try:deposits.assign(user_id,address.strip(),actor=user)
     except Exception as e:raise HTTPException(400,str(e))
     return RedirectResponse('/admin',303)
 @app.post('/admin/usdt-rate')
@@ -316,12 +320,12 @@ def admin_member(uid:int,user=Depends(admin)):
         trx_deposits=c.execute('SELECT * FROM trx_deposits WHERE user_id=? ORDER BY id DESC LIMIT 50',(uid,)).fetchall()
         events=c.execute('SELECT * FROM audit WHERE actor=? OR detail LIKE ? ORDER BY id DESC LIMIT 100',(str(uid),f'%user={uid},%')).fetchall()
         address=c.execute('SELECT address FROM deposit_addresses WHERE user_id=?',(uid,)).fetchone()
-    body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>입금 주소: {esc(address["address"] if address else "미등록")}</p></main>'
-    body+=f"""<main><h2>관리자 수동 잔액 조정</h2><p>조정 사유와 고유 참조값을 반드시 남깁니다. 차감은 보유잔액 범위 내에서만 가능합니다.</p>
+    body=f'<a href="/admin/members">← 회원 목록</a><main><h2>회원 상세 · {uid}</h2><p>아이디: {esc(m["username"] or "텔레그램 계정")} · 가입: {esc(m["created_at"])}</p><div class="stat">현재 잔액<br><strong>{db.money(m["balance_tenths"])}</strong></div><div class="stat">검수 작업<br><strong>{len(jobs)}건 (최근 100건)</strong></div><p>입금 주소: {esc(address["address"] if address else "미등록")}</p><form method="post" action="/admin/deposit-address"><input type="hidden" name="user_id" value="{uid}"><input name="address" placeholder="변경할 TRON 입금주소" required><button>회원 충전주소 변경</button></form><p>미완료 충전 신청이 있으면 변경이 차단됩니다. 주소 변경 이후 과거 입금은 자동 재배정되지 않습니다.</p></main>'
+    body+=f"""<main><h2>관리자 수동 잔액 조정</h2><p>조정 사유를 남기며 거래 참조번호는 자동 생성됩니다. 차감은 보유잔액 범위 내에서만 가능합니다.</p>
     <form method="post" action="/admin/member/{uid}/adjust"><label>유형 <select name="direction"><option value="credit">충전 (+)</option><option value="debit">차감 (-)</option></select></label>
     <label>금액(원) <input type="number" name="amount_krw" min="1" max="1000000000" required></label>
     <label>사유 <input name="reason" minlength="5" maxlength="300" required></label>
-    <label>고유 참조값 <input name="reference" minlength="6" maxlength="100" required></label><button>잔액 조정 기록</button></form></main>"""
+    <button>잔액 조정 기록</button></form></main>"""
     body+='<main><h2>회원 검수 진행 로그</h2><table><tr><th>작업 ID</th><th>일시</th><th>상태</th><th>진행률</th><th>성공/실패</th><th>결제/환불</th></tr>'
     for j in jobs:
         progress=min(100,round(j['processed_count']*100/max(j['valid_count'],1),1))
@@ -337,10 +341,11 @@ def admin_member(uid:int,user=Depends(admin)):
     return wrap(body+'</table></main>')
 
 @app.post('/admin/member/{uid}/adjust')
-def admin_adjust(request:Request,uid:int,direction:str=Form(...),amount_krw:int=Form(...),reason:str=Form(...),reference:str=Form(...),user=Depends(admin)):
+def admin_adjust(request:Request,uid:int,direction:str=Form(...),amount_krw:int=Form(...),reason:str=Form(...),user=Depends(admin)):
     guard_origin(request)
     if direction not in ('credit','debit') or not (1<=amount_krw<=1000000000):raise HTTPException(400,'조정값 오류')
-    if not 5<=len(reason.strip())<=300 or not 6<=len(reference.strip())<=100:raise HTTPException(400,'사유 또는 참조값 길이 오류')
+    if not 5<=len(reason.strip())<=300:raise HTTPException(400,'사유 길이 오류')
+    reference=uuid.uuid4().hex
     amount=amount_krw*10 * (1 if direction=='credit' else -1)
     with db.transaction() as c:
         if not c.execute('SELECT 1 FROM users WHERE user_id=?',(uid,)).fetchone():raise HTTPException(404,'회원 없음')

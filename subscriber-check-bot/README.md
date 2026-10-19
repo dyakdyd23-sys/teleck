@@ -233,3 +233,10 @@ Existing batches in `reconcile` state are intentionally NOT resubmitted automati
 
 `provider_create_uncertain` 오류가 `error_type=ValueError`로만 표시되던 문제를 수정했습니다.
 새 로그는 민감 데이터 없이 `provider_rejected code=N`, `provider_missing_task_id`, `provider_create_invalid_response`, `provider_invalid_json` 등으로 구분합니다. 기존 `reconcile` 배치는 자동 재전송하지 않습니다. 구버전 작업 오류는 소급 변경되지 않습니다.
+
+## 관리자 충전·입금주소 수정 (2026-10-19)
+- 관리자 메인 수동 충전은 `amount_krw`(실제 원 단위, 0.1원 단위 입력)를 사용합니다. 예: `50000.0` 입력은 50,000원이며 내부 원장에는 `500000`(0.1원 단위)으로 기록됩니다.
+- 고유 거래 참조번호는 서버가 UUID로 자동 생성합니다. 사용자는 입력하지 않습니다. 동일 참조번호 중복 원장 기록은 차단됩니다.
+- 관리자 메인 또는 회원 상세에서 기존 회원의 TRC-20 입금주소를 교체할 수 있습니다. 미완료 충전 신청이 남아 있으면 변경이 거부됩니다. 기존 충전 거래기록·회원 잔액은 그대로 보존합니다.
+- 주소 변경 전 사용된 주소는 은퇴 주소 목록에 보관하며 다른 회원에게 재배정하지 않습니다. 변경 후 기존 주소에 도착한 입금은 자동 적립되지 않으므로 운영자가 별도로 관리해야 합니다.
+- 기존 운영 환경변수와 Railway Volume, SQLite DB는 삭제/초기화하지 마세요. 서버 시작 시 새 은퇴주소 관리 테이블을 자동 생성합니다.
